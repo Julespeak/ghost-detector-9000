@@ -7,9 +7,9 @@
 use std::{
     error::Error,
     thread,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
     fs::File,
-    io::{Write, prelude::*},
+    io::Write,
     net::TcpStream,
 };
 
@@ -19,14 +19,21 @@ use rppal::{
     i2c::I2c
 };
 
+use rust_gpu::ahrs::{ Ascale, Gscale, Mscale };
+
 // Addresses of the chips on the board that I have; determined with i2cdetect
-const ADDR_MPU9265: u16 = 0x68;
-const ADDR_AK8963:  u16 = 0x0C;
+//const ADDR_MPU9265: u16 = 0x68;
+//const ADDR_AK8963:  u16 = 0x0C;
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("Welcome to the Rust G.P.U. V0.0!");
     println!("Running on a {}.", DeviceInfo::new()?.model());
 
+
+    // temporarily bring stuff into scope since I'm too lazy to do the smart thing
+    const AK8963_ST1:         usize = 0x02; // data ready status bit 0
+    const AK8963_WHO_AM_I:    usize = 0x00; // should return 0x48
+    const WHO_AM_I_MPU9250:   usize = 0x75; // Should return 0x71
 
     // get current system time in local units
     let current_time = std::time::SystemTime::now();
@@ -46,7 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut log_file = File::create(log_file_name).expect("Unable to create file.");
 
     // set up connection to frontend
-    let mut output_connected: bool = true;
+    let output_connected: bool = true;
     let mut output_stream = TcpStream::connect("192.168.77.189:65432")?;
     let mut output_bytes: [u8; 32] = [0; 32];
 
@@ -80,16 +87,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut q: [f64; 4] = [1.0, 0.0, 0.0, 0.0];
 
-    let mut temperature: f64 = 0.0;
-
-    let mut self_test: [f64; 6] = [0.0; 6];
-
     // Connect using I2C bus #0
     let mut i2c = I2c::with_bus(0)?;
 
     // Set up IO connections
-    let mut led = Gpio::new()?.get(GPIO_LED)?.into_output();
-    let mut interrupt_pin = Gpio::new()?.get(MPU_INT)?.into_input();
+    let mut led = Gpio::new()?.get(rust_gpu::GPIO_LED)?.into_output();
+    let interrupt_pin = Gpio::new()?.get(rust_gpu::MPU_INT)?.into_input();
 
     // Attach hardware interrupt
     // actually going to try doing this without interrupts for now
@@ -100,7 +103,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut mpu_reads: u32 = 0;
 
     // Set the address of the MPU-9250
-    i2c.set_slave_address(ADDR_MPU9265)?;
+    i2c.set_slave_address(rust_gpu::ADDR_MPU9265)?;
 
     // Read the WHO_AM_I register and check the result
     let mut reg = [0u8; 1];
@@ -108,10 +111,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if reg[0] == 0x71 {
         println!("Successfully connected to MPU-9250!");
-
-        // Perform a self test and report the values; do not that this value is basically nonsense
-        //self_test = mpu9250_self_test(&i2c)?;
-        //write!(log_file, "DEBUG: Accelerometer/gyro self test result: {:?}\n", self_test);
 
         // get sensor resolutions
         a_res = rust_gpu::ahrs::get_a_res(&a_scale);
@@ -126,17 +125,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Initialize the MPU9050
         // TODO - the ownership of a_scale and g_scale could go to this function instead
         rust_gpu::ahrs::init_mpu9250(&i2c, &a_scale, &g_scale)?;
-        println!("initialization done.");
 
         // read the WHO_AM_I register of the magnetometer, this is a good test of communication
-        i2c.set_slave_address(ADDR_AK8963)?;
+        i2c.set_slave_address(rust_gpu::ADDR_AK8963)?;
         i2c.block_read(AK8963_WHO_AM_I as u8, &mut reg).expect("Error writing to magnetometer");
         if reg[0] == 0x48 {
             println!("Successfully connected to AK8963!");
 
             // TODO - the ownership of m_scale could go to this function instead
             mag_calibration = rust_gpu::ahrs::init_ak8963(&i2c, &m_scale, m_mode)?;
-            write!(log_file, "DEBUG: Magnetometer factory calibration: {:?}\n", mag_calibration);
+            write!(log_file, "DEBUG: Magnetometer factory calibration: {:?}\n", mag_calibration)
+                .expect("Error writing to log file.");
 
             //(mag_bias, mag_scale) = calibrate_ak8963(&i2c, &mag_calibration, &mut log_file)?;
             //write!(log_file, "DEBUG: Magnetometer bias correction: {:?}\n", mag_bias);
@@ -159,30 +158,30 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Set the address of the MPU-9250
     println!("Begin data acquisition!");
-    let mut start = Instant::now();
+    let start = Instant::now();
 
     let mut last_update_time: u64 = 0;
-    let mut current_update_time: u64 = start.elapsed().as_nanos() as u64;
-    let mut delta_t: f64 = (current_update_time - last_update_time) as f64 / 1000000000.0;
+    //let mut current_update_time: u64 = start.elapsed().as_nanos() as u64;
+    //let mut delta_t: f64 = 0.0;
 
-    const total_reads: u32 = 3000;
+    const TOTAL_READS: u32 = 3000;
     let mut dummy_data: [u8; 1] = [0];
-    let mut mpu_sample_start: [u64; total_reads as usize] = [0; total_reads as usize];
-    let mut mpu_sample_stop: [u64; total_reads as usize] = [0; total_reads as usize];
-    let mut mag_sample_start: [u64; total_reads as usize] = [0; total_reads as usize];
-    let mut mag_sample_stop: [u64; total_reads as usize] = [0; total_reads as usize];
+    let mut mpu_sample_start: [u64; TOTAL_READS as usize] = [0; TOTAL_READS as usize];
+    let mut mpu_sample_stop: [u64; TOTAL_READS as usize] = [0; TOTAL_READS as usize];
+    let mut mag_sample_start: [u64; TOTAL_READS as usize] = [0; TOTAL_READS as usize];
+    let mut mag_sample_stop: [u64; TOTAL_READS as usize] = [0; TOTAL_READS as usize];
 
     loop {
-        i2c.set_slave_address(ADDR_MPU9265)?;
+        i2c.set_slave_address(rust_gpu::ADDR_MPU9265)?;
         if interrupt_pin.is_high() { // If new data is available, read it in
-            if mpu_reads < total_reads-1 {
+            if mpu_reads < TOTAL_READS-1 {
                 mpu_sample_start[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
             }
 
             // Read data from MPU
             rust_gpu::ahrs::read_mpu_data(&i2c, &mut raw_mpu_data)?;
 
-            if mpu_reads < total_reads-1 {
+            if mpu_reads < TOTAL_READS-1 {
                 mpu_sample_stop[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
             }
             mpu_reads = mpu_reads + 1;
@@ -190,46 +189,54 @@ fn main() -> Result<(), Box<dyn Error>> {
             ax = (raw_mpu_data[0] as f64) * a_res;
             ay = (raw_mpu_data[1] as f64) * a_res;
             az = (raw_mpu_data[2] as f64) * a_res;
-            write!(log_file, "DATA: accel_data, 3, 1\n");
-            write!(log_file, "{} {} {}\n", ax, ay, az);
+            write!(log_file, "DATA: accel_data, 3, 1\n")
+                .expect("Error writing to log file.");
+            write!(log_file, "{} {} {}\n", ax, ay, az)
+                .expect("Error writing to log file.");
 
             gx = (raw_mpu_data[4] as f64) * g_res;
             gy = (raw_mpu_data[5] as f64) * g_res;
             gz = (raw_mpu_data[6] as f64) * g_res;
-            write!(log_file, "DATA: gyro_data, 3, 1\n");
-            write!(log_file, "{} {} {}\n", gx, gy, gz);
+            write!(log_file, "DATA: gyro_data, 3, 1\n")
+                .expect("Error writing to log file.");
+            write!(log_file, "{} {} {}\n", gx, gy, gz)
+                .expect("Error writing to log file.");
         }
 
-        i2c.set_slave_address(ADDR_AK8963)?;
+        i2c.set_slave_address(rust_gpu::ADDR_AK8963)?;
         i2c.block_read(AK8963_ST1 as u8, &mut dummy_data)?;
 
         // TODO - This check for new data is redundant with the one inside the read_mag_data function
         if dummy_data[0] & 0x01 == 0x01 { // If new data is available, read it in
-            if mpu_reads < total_reads-1 {
+            if mpu_reads < TOTAL_READS-1 {
                mag_sample_start[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
             }
 
             // Read data from magnetometer
             rust_gpu::ahrs::read_mag_data(&i2c, &mut raw_mag_data)?;
 
-            if mpu_reads < total_reads-1 {
+            if mpu_reads < TOTAL_READS-1 {
                 mag_sample_stop[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
             }
 
             mx = ((raw_mag_data[0] as f64) * mag_calibration[0] - mag_bias[0]) * mag_scale[0] * m_res;
             my = ((raw_mag_data[1] as f64) * mag_calibration[1] - mag_bias[1]) * mag_scale[1] * m_res;
             mz = ((raw_mag_data[2] as f64) * mag_calibration[2] - mag_bias[2]) * mag_scale[2] * m_res;
-            write!(log_file, "DATA: mag_data, 3, 1\n");
-            write!(log_file, "{} {} {}\n", mx, my, mz);
+            write!(log_file, "DATA: mag_data, 3, 1\n")
+                .expect("Error writing to log file.");
+            write!(log_file, "{} {} {}\n", mx, my, mz)
+                .expect("Error writing to log file.");
         }
 
         // Sensors x (y)-axis of the accelerometer/gyro is aligned with the y (x)-axis of the magnetometer;
         // the magnetometer z-axis (+ down) is misaligned with the z-axis (+ up) of accelerometer and gyro!
-        current_update_time = start.elapsed().as_nanos() as u64;
-        delta_t = (current_update_time - last_update_time) as f64 / 1000000000.0;
+        let current_update_time: u64 = start.elapsed().as_nanos() as u64;
+        let delta_t: f64 = (current_update_time - last_update_time) as f64 / 1000000000.0;
         last_update_time = current_update_time;
-        write!(log_file, "DATA: update_period, 1, 1\n");
-        write!(log_file, "{}\n", delta_t);
+        write!(log_file, "DATA: update_period, 1, 1\n")
+            .expect("Error writing to log file.");
+        write!(log_file, "{}\n", delta_t)
+            .expect("Error writing to log file.");
 
         rust_gpu::ahrs::madgwick_quaternion_update(&[ax, ay, az], &[gx*std::f64::consts::PI/180.0, gy*std::f64::consts::PI/180.0, gz*std::f64::consts::PI/180.0], &[my, mx, -mz], &mut q, delta_t)?;
 
@@ -251,26 +258,37 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let elapsed = start.elapsed();
 
-    write!(log_file, "DEBUG: Elapsed time: {:?}\n", elapsed);
-    write!(log_file, "DEBUG: Loop iterations: {}\n", iterations);
-    write!(log_file, "DEBUG: MPU reads: {}\n", mpu_reads);
+    write!(log_file, "DEBUG: Elapsed time: {:?}\n", elapsed)
+        .expect("Error writing to log file.");
+    write!(log_file, "DEBUG: Loop iterations: {}\n", iterations)
+        .expect("Error writing to log file.");
+    write!(log_file, "DEBUG: MPU reads: {}\n", mpu_reads)
+        .expect("Error writing to log file.");
 
     // Print timing information to file
-    write!(log_file, "DATA: mpu_sample_start, 1, {}\n", total_reads);
-    for (i, mpu_sample_start_time) in mpu_sample_start.iter().enumerate() {
-        write!(log_file, "{}\n", mpu_sample_start_time);
+    write!(log_file, "DATA: mpu_sample_start, 1, {}\n", TOTAL_READS)
+        .expect("Error writing to log file.");
+    for (_i, mpu_sample_start_time) in mpu_sample_start.iter().enumerate() {
+        write!(log_file, "{}\n", mpu_sample_start_time)
+            .expect("Error writing to log file.");
     }
-    write!(log_file, "DATA: mpu_sample_stop, 1, {}\n", total_reads);
-    for (i, mpu_sample_stop_time) in mpu_sample_stop.iter().enumerate() {
-        write!(log_file, "{}\n", mpu_sample_stop_time);
+    write!(log_file, "DATA: mpu_sample_stop, 1, {}\n", TOTAL_READS)
+        .expect("Error writing to log file.");
+    for (_i, mpu_sample_stop_time) in mpu_sample_stop.iter().enumerate() {
+        write!(log_file, "{}\n", mpu_sample_stop_time)
+            .expect("Error writing to log file.");
     }
-    write!(log_file, "DATA: mag_sample_start, 1, {}\n", total_reads);
-    for (i, mag_sample_start_time) in mag_sample_start.iter().enumerate() {
-        write!(log_file, "{}\n", mag_sample_start_time);
+    write!(log_file, "DATA: mag_sample_start, 1, {}\n", TOTAL_READS)
+        .expect("Error writing to log file.");
+    for (_i, mag_sample_start_time) in mag_sample_start.iter().enumerate() {
+        write!(log_file, "{}\n", mag_sample_start_time)
+            .expect("Error writing to log file.");
     }
-    write!(log_file, "DATA: mag_sample_stop, 1, {}\n", total_reads);
-    for (i, mag_sample_stop_time) in mag_sample_stop.iter().enumerate() {
-        write!(log_file, "{}\n", mag_sample_stop_time);
+    write!(log_file, "DATA: mag_sample_stop, 1, {}\n", TOTAL_READS)
+        .expect("Error writing to log file.");
+    for (_i, mag_sample_stop_time) in mag_sample_stop.iter().enumerate() {
+        write!(log_file, "{}\n", mag_sample_stop_time)
+            .expect("Error writing to log file.");
     }
 
     Ok(())

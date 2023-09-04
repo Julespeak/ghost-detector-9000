@@ -1,8 +1,14 @@
-use std::thread;
+use std::{
+    error::Error,
+    thread,
+    time::Duration,
+    fs::File,
+    io::Write,
+};
 
-// Addresses of the chips on the board that I have; determined with i2cdetect
-const ADDR_MPU9265: u16 = 0x68;
-const ADDR_AK8963:  u16 = 0x0C;
+use rppal::{
+    i2c::I2c,
+};
 
 //////////////////////////////
 // MPU-9250 register addresses
@@ -144,7 +150,7 @@ const ZA_OFFSET_L:        usize = 0x7E;
 // Set initial input parameters
 #[repr(u8)]
 #[derive(Copy, Clone)]
-enum Ascale {
+pub enum Ascale {
     Afs2g = 0,
     Afs4g,
     Afs8g,
@@ -153,7 +159,7 @@ enum Ascale {
 
 #[repr(u8)]
 #[derive(Copy, Clone)]
-enum Gscale {
+pub enum Gscale {
     Gfs250dps = 0,
     Gfs500dps,
     Gfs1000dps,
@@ -162,17 +168,14 @@ enum Gscale {
 
 #[repr(u8)]
 #[derive(Copy, Clone)]
-enum Mscale {
+pub enum Mscale {
     Mfs14bits = 0, // 0.6 mG per LSB
     Mfs16bits, // 0.15 mG per LSB
 }
 
-// GPIO pin connected to INT for creating hardware interrupt to read new data
-const MPU_INT: u8 = 5;
-
 // global constants for 9 DoF fusion and AHRS (Attitude and Heading Reference System)
-const gyro_meas_error: f64 = std::f64::consts::PI * (40.0 / 180.0); // gryoscope measurement error in rad/s (start at 40 deg/s)
-const gyro_meas_drift: f64 = std::f64::consts::PI * (0.0 / 180.0); // gryoscope measurement drift in rad/s/s (start at 0.0 deg/s/s)
+const GYRO_MEAS_ERROR: f64 = std::f64::consts::PI * (40.0 / 180.0); // gryoscope measurement error in rad/s (start at 40 deg/s)
+const GYRO_MEAS_DRIFT: f64 = std::f64::consts::PI * (0.0 / 180.0); // gryoscope measurement drift in rad/s/s (start at 0.0 deg/s/s)
 
 
 // Implementation of Sebastian Madgwick's "...efficient orientation filter for... inertial/magnetic sensor arrays"
@@ -183,28 +186,16 @@ const gyro_meas_drift: f64 = std::f64::consts::PI * (0.0 / 180.0); // gryoscope 
 // but is much less computationally intensive---it can be performed on a 3.3 V Pro Mini operating at 8 MHz!
 pub fn madgwick_quaternion_update(accel_data: &[f64; 3], gyro_data: &[f64; 3], mag_data: &[f64; 3], q: &mut [f64; 4], delta_t: f64) -> Result<(), Box<dyn Error>> {
     // There is a tradeoff in the beta parameter between accuracy and response speed.
-    // In the original Madgwick study, beta of 0.041 (corresponding to gyro_meas_error of 2.7 degrees/s) was found to give optimal accuracy.
+    // In the original Madgwick study, beta of 0.041 (corresponding to GYRO_MEAS_ERROR of 2.7 degrees/s) was found to give optimal accuracy.
     // However, with this value, the LSM9SD0 response time is about 10 seconds to a stable initial quaternion.
     // Subsequent changes also require a longish lag time to a stable output.
-    // By increasing beta (gyro_meas_error) by about a factor of fifteen, the response time constant is reduced to ~2 sec.
+    // By increasing beta (GYRO_MEAS_ERROR) by about a factor of fifteen, the response time constant is reduced to ~2 sec.
     // This is the free parameter in the Madgwick filtering and fusion scheme.
-    let beta        : f64      = f64::sqrt(3.0/4.0) * gyro_meas_error; // compute beta
-    let zeta        : f64      = f64::sqrt(3.0/4.0) * gyro_meas_drift; // compute zeta
+    let beta        : f64      = f64::sqrt(3.0/4.0) * GYRO_MEAS_ERROR; // compute beta
+    // let zeta        : f64      = f64::sqrt(3.0/4.0) * GYRO_MEAS_DRIFT; // compute zeta
     // Calculated values
-    let mut norm    : f64      = 0.0;
-    let mut inv_norm: f64      = 0.0;
     let mut a_norm  : [f64; 3] = [0.0; 3];
     let mut m_norm  : [f64; 3] = [0.0; 3];
-    let mut hx      : f64      = 0.0;
-    let mut hy      : f64      = 0.0;
-    let mut s0      : f64      = 0.0;
-    let mut s1      : f64      = 0.0;
-    let mut s2      : f64      = 0.0;
-    let mut s3      : f64      = 0.0;
-    let mut qdot0   : f64      = 0.0;
-    let mut qdot1   : f64      = 0.0;
-    let mut qdot2   : f64      = 0.0;
-    let mut qdot3   : f64      = 0.0;
     // Auxiliary variables to avoid repeated arithmetic
     let mut _2q0mx  : f64      = 0.0;
     let mut _2q0my  : f64      = 0.0;
@@ -232,25 +223,25 @@ pub fn madgwick_quaternion_update(accel_data: &[f64; 3], gyro_data: &[f64; 3], m
     let q3q3        : f64      = q[3] * q[3];
 
     // Normalize accelerometer data
-    norm = f64::sqrt(accel_data[0] * accel_data[0] + accel_data[1] * accel_data[1] + accel_data[2] * accel_data[2]);
+    let norm: f64 = f64::sqrt(accel_data[0] * accel_data[0] + accel_data[1] * accel_data[1] + accel_data[2] * accel_data[2]);
     if norm == 0.0 {
         //return Err(<dyn Error>::new(ErrorKind::Other, "Norm of accelerometer data is zero!");
         println!("Quaternion update failed!");
         return Ok(());
     }
-    inv_norm = 1.0/norm;
+    let inv_norm: f64 = 1.0/norm;
     a_norm[0] = accel_data[0] * inv_norm;
     a_norm[1] = accel_data[1] * inv_norm;
     a_norm[2] = accel_data[2] * inv_norm;
 
     // Normalize magnetometer data
-    norm = f64::sqrt(mag_data[0] * mag_data[0] + mag_data[1] * mag_data[1] + mag_data[2] * mag_data[2]);
+    let norm: f64 = f64::sqrt(mag_data[0] * mag_data[0] + mag_data[1] * mag_data[1] + mag_data[2] * mag_data[2]);
     if norm == 0.0 {
         //return Err(<dyn Error>::new(ErrorKind::Other, "Norm of magnetometer data is zero!");
         println!("Quaternion update failed!");
         return Ok(());
     }
-    inv_norm = 1.0/norm;
+    let inv_norm: f64 = 1.0/norm;
     m_norm[0] = mag_data[0] * inv_norm;
     m_norm[1] = mag_data[1] * inv_norm;
     m_norm[2] = mag_data[2] * inv_norm;
@@ -261,38 +252,38 @@ pub fn madgwick_quaternion_update(accel_data: &[f64; 3], gyro_data: &[f64; 3], m
     _2q0mz = 2.0 * q[0] * m_norm[2];
     _2q1mx = 2.0 * q[1] * m_norm[0];
 
-    hx = m_norm[0] * q0q0 - _2q0my * q[3] + _2q0mz * q[2] + m_norm[0] * q1q1 + _2q1 * m_norm[1] * q[2] + _2q1 * m_norm[2] * q[3] - m_norm[0] * q2q2 - m_norm[0] * q3q3;
-    hy = _2q0mx * q[3] + m_norm[1] * q0q0 - _2q0mz * q[1] + _2q1mx * q[2] - m_norm[1] * q1q1 + m_norm[1] * q2q2 + _2q2 * m_norm[2] * q[3] - m_norm[1] * q3q3;
+    let hx: f64 = m_norm[0] * q0q0 - _2q0my * q[3] + _2q0mz * q[2] + m_norm[0] * q1q1 + _2q1 * m_norm[1] * q[2] + _2q1 * m_norm[2] * q[3] - m_norm[0] * q2q2 - m_norm[0] * q3q3;
+    let hy: f64 = _2q0mx * q[3] + m_norm[1] * q0q0 - _2q0mz * q[1] + _2q1mx * q[2] - m_norm[1] * q1q1 + m_norm[1] * q2q2 + _2q2 * m_norm[2] * q[3] - m_norm[1] * q3q3;
     _2bx = f64::sqrt(hx * hx + hy * hy);
     _2bz = -_2q0mx * q[2] + _2q0my * q[1] + m_norm[2] * q0q0 + _2q1mx * q[3] - m_norm[2] * q1q1 + _2q2 * m_norm[1] * q[3] - m_norm[2] * q2q2 + m_norm[2] * q3q3;
     _4bx = 2.0 * _2bx;
     _4bz = 2.0 * _2bz;
 
     // Gradient decent algorithm corrective step
-    s0 = -_2q2 * (2.0 * q1q3 - _2q0q2 - a_norm[0]) + _2q1 * (2.0 * q0q1 + _2q2q3 - a_norm[1]) - _2bz * q[2] * (_2bx * (0.5 - q2q2 - q3q3) + _2bz * (q1q3 - q0q2) - m_norm[0]) + (-_2bx * q[3] + _2bz * q[1]) * (_2bx * (q1q2 - q0q3) + _2bz * (q0q1 + q2q3) - m_norm[1]) + _2bx * q[2] * (_2bx * (q0q2 + q1q3) + _2bz * (0.5 - q1q1 - q2q2) - m_norm[2]);
-    s1 = _2q3 * (2.0 * q1q3 - _2q0q2 - a_norm[0]) + _2q0 * (2.0 * q0q1 + _2q2q3 - a_norm[1]) - 4.0 * q[1] * (1.0 - 2.0 * q1q1 - 2. * q2q2 - a_norm[2]) + _2bz * q[3] * (_2bx * (0.5 - q2q2- q3q3) + _2bz * (q1q3 - q0q2) - m_norm[0]) + (_2bx * q[2] + _2bz * q[0]) * (_2bx * (q1q2 - q0q3) + _2bz * (q0q1 + q2q3) - m_norm[1]) + (_2bx * q[3] - _4bz * q[1]) * (_2bx * (q0q2 + q1q3) + _2bz * (0.5 - q1q1 - q2q2) - m_norm[2]);
-    s2 = -_2q0 * (2.0 * q1q3 - _2q0q2 - a_norm[0]) + _2q3 * (2.0 * q0q1 + _2q2q3 - a_norm[1]) - 4.0 * q[2] * (1.0 - 2.0 * q1q1 - 2.0 * q2q2 - a_norm[2]) + (-_4bx * q[2] - _2bz * q[0]) * (_2bx * (0.5 - q2q2 - q3q3) + _2bz * (q1q3 - q0q2) - m_norm[0]) + (_2bx * q[1] + _2bz * q[3]) * (_2bx * (q1q2 - q0q3) + _2bz * (q0q1 + q2q3) - m_norm[1]) + (_2bx * q[0] - _4bz * q[2]) * (_2bx * (q0q2 + q1q3) + _2bz * (0.5 - q1q1 - q2q2) - m_norm[2]);
-    s3 = _2q1 * (2.0 * q1q3 - _2q0q2 - a_norm[0]) + _2q2 * (2.0 * q0q1 + _2q2q3 - a_norm[1]) + (-_4bx * q[3] + _2bz * q[1]) * (_2bx * (0.5 - q2q2 - q3q3) + _2bz * (q1q3 - q0q2) - m_norm[0]) + (-_2bx * q[0] + _2bz * q[2]) * (_2bx * (q1q2 - q0q3) + _2bz * (q0q1 + q2q3) - m_norm[1]) + _2bx * q[1] * (_2bx * (q0q2 + q1q3) + _2bz * (0.5 - q1q1 - q2q2) - m_norm[2]);
-    norm = f64::sqrt(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3); // Normalise step magnitude
-    inv_norm = 1.0/norm;
+    let mut s0: f64 = -_2q2 * (2.0 * q1q3 - _2q0q2 - a_norm[0]) + _2q1 * (2.0 * q0q1 + _2q2q3 - a_norm[1]) - _2bz * q[2] * (_2bx * (0.5 - q2q2 - q3q3) + _2bz * (q1q3 - q0q2) - m_norm[0]) + (-_2bx * q[3] + _2bz * q[1]) * (_2bx * (q1q2 - q0q3) + _2bz * (q0q1 + q2q3) - m_norm[1]) + _2bx * q[2] * (_2bx * (q0q2 + q1q3) + _2bz * (0.5 - q1q1 - q2q2) - m_norm[2]);
+    let mut s1: f64 = _2q3 * (2.0 * q1q3 - _2q0q2 - a_norm[0]) + _2q0 * (2.0 * q0q1 + _2q2q3 - a_norm[1]) - 4.0 * q[1] * (1.0 - 2.0 * q1q1 - 2. * q2q2 - a_norm[2]) + _2bz * q[3] * (_2bx * (0.5 - q2q2- q3q3) + _2bz * (q1q3 - q0q2) - m_norm[0]) + (_2bx * q[2] + _2bz * q[0]) * (_2bx * (q1q2 - q0q3) + _2bz * (q0q1 + q2q3) - m_norm[1]) + (_2bx * q[3] - _4bz * q[1]) * (_2bx * (q0q2 + q1q3) + _2bz * (0.5 - q1q1 - q2q2) - m_norm[2]);
+    let mut s2: f64 = -_2q0 * (2.0 * q1q3 - _2q0q2 - a_norm[0]) + _2q3 * (2.0 * q0q1 + _2q2q3 - a_norm[1]) - 4.0 * q[2] * (1.0 - 2.0 * q1q1 - 2.0 * q2q2 - a_norm[2]) + (-_4bx * q[2] - _2bz * q[0]) * (_2bx * (0.5 - q2q2 - q3q3) + _2bz * (q1q3 - q0q2) - m_norm[0]) + (_2bx * q[1] + _2bz * q[3]) * (_2bx * (q1q2 - q0q3) + _2bz * (q0q1 + q2q3) - m_norm[1]) + (_2bx * q[0] - _4bz * q[2]) * (_2bx * (q0q2 + q1q3) + _2bz * (0.5 - q1q1 - q2q2) - m_norm[2]);
+    let mut s3: f64 = _2q1 * (2.0 * q1q3 - _2q0q2 - a_norm[0]) + _2q2 * (2.0 * q0q1 + _2q2q3 - a_norm[1]) + (-_4bx * q[3] + _2bz * q[1]) * (_2bx * (0.5 - q2q2 - q3q3) + _2bz * (q1q3 - q0q2) - m_norm[0]) + (-_2bx * q[0] + _2bz * q[2]) * (_2bx * (q1q2 - q0q3) + _2bz * (q0q1 + q2q3) - m_norm[1]) + _2bx * q[1] * (_2bx * (q0q2 + q1q3) + _2bz * (0.5 - q1q1 - q2q2) - m_norm[2]);
+    let norm: f64 = f64::sqrt(s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3); // Normalise step magnitude
+    let inv_norm: f64 = 1.0/norm;
     s0 = s0 * inv_norm;
     s1 = s1 * inv_norm;
     s2 = s2 * inv_norm;
     s3 = s3 * inv_norm;
 
     // Compute rate of change of quaternion
-    qdot0 = 0.5 * (-q[1] * gyro_data[0] - q[2] * gyro_data[1] - q[3] * gyro_data[2]) - beta * s0;
-    qdot1 = 0.5 * ( q[0] * gyro_data[0] + q[2] * gyro_data[2] - q[3] * gyro_data[1]) - beta * s1;
-    qdot2 = 0.5 * ( q[0] * gyro_data[1] - q[1] * gyro_data[2] + q[3] * gyro_data[0]) - beta * s2;
-    qdot3 = 0.5 * ( q[0] * gyro_data[2] + q[1] * gyro_data[1] - q[2] * gyro_data[0]) - beta * s3;
+    let qdot0: f64 = 0.5 * (-q[1] * gyro_data[0] - q[2] * gyro_data[1] - q[3] * gyro_data[2]) - beta * s0;
+    let qdot1: f64 = 0.5 * ( q[0] * gyro_data[0] + q[2] * gyro_data[2] - q[3] * gyro_data[1]) - beta * s1;
+    let qdot2: f64 = 0.5 * ( q[0] * gyro_data[1] - q[1] * gyro_data[2] + q[3] * gyro_data[0]) - beta * s2;
+    let qdot3: f64 = 0.5 * ( q[0] * gyro_data[2] + q[1] * gyro_data[1] - q[2] * gyro_data[0]) - beta * s3;
 
     // Integrate to yield quaternion
     q[0] = q[0] + qdot0 * delta_t;
     q[1] = q[1] + qdot1 * delta_t;
     q[2] = q[2] + qdot2 * delta_t;
     q[3] = q[3] + qdot3 * delta_t;
-    norm = f64::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]); // Normalise step magnitude
-    inv_norm = 1.0/norm;
+    let norm: f64 = f64::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]); // Normalise step magnitude
+    let inv_norm: f64 = 1.0/norm;
     q[0] = q[0] * inv_norm;
     q[1] = q[1] * inv_norm;
     q[2] = q[2] * inv_norm;
@@ -363,7 +354,6 @@ pub fn init_ak8963(i2c: &I2c, m_scale: &Mscale, m_mode: u8) -> Result<([f64; 3])
 
 // Funciton which accumulates magnetometer data and 
 pub fn calibrate_ak8963(i2c: &I2c, mag_calibration: &[f64; 3], log_file: &mut File) -> Result<([f64; 3], [f64;3]), Box<dyn Error>> {
-    let mut sample_count: u16 = 0;
     let mut raw_mag_bias: [i32; 3] = [0; 3];
     let mut raw_mag_scale: [i32; 3] = [0; 3];
     let mut mag_bias: [f64; 3] = [0.0; 3];
@@ -378,15 +368,17 @@ pub fn calibrate_ak8963(i2c: &I2c, mag_calibration: &[f64; 3], log_file: &mut Fi
 
     // shoot for ~fifteen seconds of mag data
     // TODO - get the m_mode from the register on the magnetometer and turn this back into an if statement
-    sample_count = 256;
-    write!(log_file, "DATA: mag_cal, 3, {}\n", sample_count);
-    for i in 0..sample_count {
+    let sample_count: u16 = 256;
+    write!(log_file, "DATA: mag_cal, 3, {}\n", sample_count)
+        .expect("Error writing to log file.");
+    for _i in 0..sample_count {
         read_mag_data(&i2c, &mut raw_mag_data)?;
         for j in 0..3 {
             if raw_mag_data[j] > mag_max[j] {mag_max[j] = raw_mag_data[j];}
             if raw_mag_data[j] < mag_min[j] {mag_min[j] = raw_mag_data[j];}
         }
-        write!(log_file, "{} {} {}\n", raw_mag_data[0], raw_mag_data[1], raw_mag_data[2]);
+        write!(log_file, "{} {} {}\n", raw_mag_data[0], raw_mag_data[1], raw_mag_data[2])
+            .expect("Error writing to log file.");
         thread::sleep(Duration::from_millis(135)); // at 8Hz ODR, new mag data is available every 125ms
     }
 
@@ -512,9 +504,6 @@ pub fn init_mpu9250(i2c: &I2c, a_scale: &Ascale, g_scale: &Gscale) -> Result<(),
 // of the at-rest readings and then loads the resulting offsets into accelerometer and gyro bias registers.
 pub fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn Error>> {
     let mut raw_data: [u8; 12] = [0; 12];
-    let mut ii: u16 = 0;
-    let mut packet_count: u16 = 0;
-    let mut fifo_count: u16 = 0;
     let mut gyro_bias: [i32; 3] = [0; 3];
     let mut accel_bias: [i32; 3] = [0; 3];
     let mut scaled_gyro_bias: [f64; 3] = [0.0; 3];
@@ -561,13 +550,13 @@ pub fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn E
     // at the end of the sample accumulation, turn off FIFO sensor read
     i2c.block_write(FIFO_EN as u8, &[0x00])?; // disable gyro and accelerometer sensors for FIFO
     i2c.block_read(FIFO_COUNTH as u8, &mut raw_data[0..2])?; // read FIFO sample count
-    fifo_count = (raw_data[0] as u16) << 8 | (raw_data[1] as u16);
-    packet_count = fifo_count/12; // how many sets of full gyro and accelerometer data for averaging
+    let fifo_count: u16 = (raw_data[0] as u16) << 8 | (raw_data[1] as u16);
+    let packet_count: u16 = fifo_count/12; // how many sets of full gyro and accelerometer data for averaging
 
     let mut accel_temp: [i16; 3] = [0; 3];
     let mut gyro_temp: [i16; 3] = [0; 3];
 
-    for i in 0..packet_count {
+    for _i in 0..packet_count {
         i2c.block_read(FIFO_R_W as u8, &mut raw_data)?; // read data for averaging
         accel_temp[0] = (raw_data[0] as i16) << 8 | raw_data[1] as i16; // form signed 16-bit integer for each sample if FIFO
         accel_temp[1] = (raw_data[2] as i16) << 8 | raw_data[3] as i16;
@@ -615,7 +604,8 @@ pub fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn E
     scaled_gyro_bias[1] = gyro_bias[1] as f64 / gyrosensitivity as f64;
     scaled_gyro_bias[2] = gyro_bias[2] as f64 / gyrosensitivity as f64;
 
-    write!(log_file, "DEBUG: Scaled gyro biases (before calibration): {:?}\n", scaled_gyro_bias);
+    write!(log_file, "DEBUG: Scaled gyro biases (before calibration): {:?}\n", scaled_gyro_bias)
+        .expect("Error writing to log file.");
 
     // construct the accelerometer biases for pushing to the hardware accelerometer ias registers. These registers contain
     // factory trim values which must be added to the calculated accelerometer biases; on boot up these registers will hold
@@ -668,7 +658,8 @@ pub fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn E
     scaled_accel_bias[0] = accel_bias[0] as f64 / accelsensitivity as f64;
     scaled_accel_bias[1] = accel_bias[1] as f64 / accelsensitivity as f64;
     scaled_accel_bias[2] = accel_bias[2] as f64 / accelsensitivity as f64;
-    write!(log_file, "DEBUG: Scaled accelerometer biases (before calibration): {:?}\n", scaled_accel_bias);
+    write!(log_file, "DEBUG: Scaled accelerometer biases (before calibration): {:?}\n", scaled_accel_bias)
+        .expect("Error writing to log file.");
 
     // re-measure the biases
 
@@ -697,10 +688,10 @@ pub fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn E
     // at the end of the sample accumulation, turn off FIFO sensor read
     i2c.block_write(FIFO_EN as u8, &[0x00])?; // disable gyro and accelerometer sensors for FIFO
     i2c.block_read(FIFO_COUNTH as u8, &mut raw_data[0..2])?; // read FIFO sample count
-    fifo_count = (raw_data[0] as u16) << 8 | (raw_data[1] as u16);
-    packet_count = fifo_count/12; // how many sets of full gyro and accelerometer data for averaging
+    let fifo_count: u16 = (raw_data[0] as u16) << 8 | (raw_data[1] as u16);
+    let packet_count: u16 = fifo_count/12; // how many sets of full gyro and accelerometer data for averaging
 
-    for i in 0..packet_count {
+    for _i in 0..packet_count {
         i2c.block_read(FIFO_R_W as u8, &mut raw_data)?; // read data for averaging
         accel_temp[0] = (raw_data[0] as i16) << 8 | raw_data[1] as i16; // form signed 16-bit integer for each sample if FIFO
         accel_temp[1] = (raw_data[2] as i16) << 8 | raw_data[3] as i16;
@@ -730,13 +721,15 @@ pub fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn E
     calibrated_scaled_gyro_bias[0] = gyro_bias[0] as f64 / gyrosensitivity as f64;
     calibrated_scaled_gyro_bias[1] = gyro_bias[1] as f64 / gyrosensitivity as f64;
     calibrated_scaled_gyro_bias[2] = gyro_bias[2] as f64 / gyrosensitivity as f64;
-    write!(log_file, "DEBUG: Scaled gyro biases (after calibration): {:?}\n", calibrated_scaled_gyro_bias);
+    write!(log_file, "DEBUG: Scaled gyro biases (after calibration): {:?}\n", calibrated_scaled_gyro_bias)
+        .expect("Error writing to log file.");
 
     calibrated_scaled_accel_bias[0] = accel_bias[0] as f64 / accelsensitivity as f64;
     calibrated_scaled_accel_bias[1] = accel_bias[1] as f64 / accelsensitivity as f64;
     calibrated_scaled_accel_bias[2] = accel_bias[2] as f64 / accelsensitivity as f64;
 
-    write!(log_file, "DEBUG: Scaled accelerometer biases (after calibration): {:?}\n", calibrated_scaled_accel_bias);
+    write!(log_file, "DEBUG: Scaled accelerometer biases (after calibration): {:?}\n", calibrated_scaled_accel_bias)
+        .expect("Error writing to log file.");
     
     ///////////////
 
