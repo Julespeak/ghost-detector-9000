@@ -4,8 +4,6 @@
 // Jules Stuart
 //
 
-mod ahrs;
-
 use std::{
     error::Error,
     thread,
@@ -20,8 +18,6 @@ use rppal::{
     system::DeviceInfo,
     i2c::I2c
 };
-
-pub use crate::ahrs::ahrs;
 
 // Addresses of the chips on the board that I have; determined with i2cdetect
 const ADDR_MPU9265: u16 = 0x68;
@@ -118,18 +114,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         //write!(log_file, "DEBUG: Accelerometer/gyro self test result: {:?}\n", self_test);
 
         // get sensor resolutions
-        a_res = ahrs::get_a_res(&a_scale);
-        g_res = ahrs::get_g_res(&g_scale);
-        m_res = ahrs::get_m_res(&m_scale);
+        a_res = rust_gpu::ahrs::get_a_res(&a_scale);
+        g_res = rust_gpu::ahrs::get_g_res(&g_scale);
+        m_res = rust_gpu::ahrs::get_m_res(&m_scale);
 
         // println!("Enum values: {}, {}, {}", a_scale as u8, g_scale as u8, m_scale as u8);
 
         // Calibrate gyro and accelerometers, load biases in bias registers
-        ahrs::calibrate_mpu9250(&i2c, &mut log_file)?;
+        rust_gpu::ahrs::calibrate_mpu9250(&i2c, &mut log_file)?;
 
         // Initialize the MPU9050
         // TODO - the ownership of a_scale and g_scale could go to this function instead
-        ahrs::init_mpu9250(&i2c, &a_scale, &g_scale)?;
+        rust_gpu::ahrs::init_mpu9250(&i2c, &a_scale, &g_scale)?;
         println!("initialization done.");
 
         // read the WHO_AM_I register of the magnetometer, this is a good test of communication
@@ -139,7 +135,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("Successfully connected to AK8963!");
 
             // TODO - the ownership of m_scale could go to this function instead
-            mag_calibration = ahrs::init_ak8963(&i2c, &m_scale, m_mode)?;
+            mag_calibration = rust_gpu::ahrs::init_ak8963(&i2c, &m_scale, m_mode)?;
             write!(log_file, "DEBUG: Magnetometer factory calibration: {:?}\n", mag_calibration);
 
             //(mag_bias, mag_scale) = calibrate_ak8963(&i2c, &mag_calibration, &mut log_file)?;
@@ -184,7 +180,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             // Read data from MPU
-            ahrs::read_mpu_data(&i2c, &mut raw_mpu_data)?;
+            rust_gpu::ahrs::read_mpu_data(&i2c, &mut raw_mpu_data)?;
 
             if mpu_reads < total_reads-1 {
                 mpu_sample_stop[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
@@ -214,7 +210,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             // Read data from magnetometer
-            ahrs::read_mag_data(&i2c, &mut raw_mag_data)?;
+            rust_gpu::ahrs::read_mag_data(&i2c, &mut raw_mag_data)?;
 
             if mpu_reads < total_reads-1 {
                 mag_sample_stop[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
@@ -235,7 +231,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         write!(log_file, "DATA: update_period, 1, 1\n");
         write!(log_file, "{}\n", delta_t);
 
-        ahrs::madgwick_quaternion_update(&[ax, ay, az], &[gx*std::f64::consts::PI/180.0, gy*std::f64::consts::PI/180.0, gz*std::f64::consts::PI/180.0], &[my, mx, -mz], &mut q, delta_t)?;
+        rust_gpu::ahrs::madgwick_quaternion_update(&[ax, ay, az], &[gx*std::f64::consts::PI/180.0, gy*std::f64::consts::PI/180.0, gz*std::f64::consts::PI/180.0], &[my, mx, -mz], &mut q, delta_t)?;
 
         // Write new quaternion to frontend
         for i in 0..4 {

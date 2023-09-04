@@ -1,3 +1,5 @@
+use std::thread;
+
 // Addresses of the chips on the board that I have; determined with i2cdetect
 const ADDR_MPU9265: u16 = 0x68;
 const ADDR_AK8963:  u16 = 0x0C;
@@ -173,7 +175,6 @@ const gyro_meas_error: f64 = std::f64::consts::PI * (40.0 / 180.0); // gryoscope
 const gyro_meas_drift: f64 = std::f64::consts::PI * (0.0 / 180.0); // gryoscope measurement drift in rad/s/s (start at 0.0 deg/s/s)
 
 
-pub mod ahrs {
     // Implementation of Sebastian Madgwick's "...efficient orientation filter for... inertial/magnetic sensor arrays"
     // (see http://www.x-io.co.uk/category/open-source/ for examples and more details)
     // which fuses acceleration, rotation rate, and magnetic moments to produce a quaternion-based estimate of absolute
