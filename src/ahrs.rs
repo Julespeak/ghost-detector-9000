@@ -283,7 +283,7 @@ impl Ahrs {
     }
 
     /// Compute quaternions forever
-    pub fn compute_quaternions() {
+    pub fn compute_quaternions() -> Result<(), Box<dyn Error>> {
         let start = Instant::now();
 
         let mut ax: f64 = 0.0; // variables to hold latest sensor data values
@@ -384,9 +384,10 @@ impl Ahrs {
                 }
             }
 
-            if output_connected && iterations%10 == 0 {
-                output_stream.write(&output_bytes)?;
-            }
+            // Replace this with a send() using an output data struct
+            //if output_connected && iterations%10 == 0 {
+            //    output_stream.write(&output_bytes)?;
+            //}
 
             iterations = iterations + 1;
 
@@ -426,6 +427,8 @@ impl Ahrs {
             write!(log_file, "{}\n", mag_sample_stop_time)
                 .expect("Error writing to log file.");
         }
+
+        Ok(())
     }
 
     // Implementation of Sebastian Madgwick's "...efficient orientation filter for... inertial/magnetic sensor arrays"
