@@ -56,6 +56,7 @@ fn main() {
     let mut quaternion: [f64; 4] = [1.0, 0.0, 0.0, 0.0];
 
     loop {
+        // TODO - Refactor this to a pub fn get_lastest_quaternion() that can be called on the AHRS
         quaternion = match gpu_ahrs.receiver.as_ref().unwrap().try_recv() {
             Ok(ahrs_quaternion) => ahrs_quaternion,
             Err(_error) => quaternion,
