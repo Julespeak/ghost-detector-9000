@@ -273,11 +273,13 @@ impl Ahrs {
                     .expect("Error writing to log file.");
 
                 //(mag_bias, mag_scale) = calibrate_ak8963(&i2c, &mag_calibration, &mut log_file)?;
-                //write!(log_file, "DEBUG: Magnetometer bias correction: {:?}\n", mag_bias);
-                //write!(log_file, "DEBUG: Magnetometer scale correction: {:?}\n", mag_scale);
+                //write!(log_file, "DEBUG: Magnetometer bias correction: {:?}\n", mag_bias)
+                //    .expect("Error writing to log file.");
+                //write!(log_file, "DEBUG: Magnetometer scale correction: {:?}\n", mag_scale)
+                //    .expect("Error writing to log file.");
                 // use previously calculated calibration values
-                mag_bias = [187.06640625, 376.5234375, 216.59765625];
-                mag_scale = [0.9712230215827338, 0.996309963099631, 1.0344827586206897];
+                mag_bias = [-200.515625, 93.515625, 78.1171875];
+                mag_scale = [0.9703703703703703, 1.0155038759689923, 1.0155038759689923];
             } else {
                 panic!("Could not connect to AK8963.");
             }
