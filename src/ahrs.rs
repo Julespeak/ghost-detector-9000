@@ -213,9 +213,6 @@ impl Ahrs {
         let a_scale: Ascale = Ascale::Afs2g;
         let g_scale: Gscale = Gscale::Gfs250dps;
         let m_scale: Mscale = Mscale::Mfs16bits; // Choose either 14-bit or 16-bit magnetometer resolution
-        //let mut a_res: f64 = 0.0; // Scale resolutions per LSB for the sensors
-        //let mut g_res: f64 = 0.0;
-        //let mut m_res: f64 = 0.0;
 
         // Specify magnetometer full scale
         let m_mode: u8 = 0x02; // 2 for 8 Hz, 6 for 100 Hz continuous magnetometer data read
@@ -248,11 +245,6 @@ impl Ahrs {
 
         if reg[0] == 0x71 {
             println!("Successfully connected to MPU-9250!");
-
-            // get sensor resolutions
-            //a_res = rust_gpu::ahrs::get_a_res(&a_scale);
-            //g_res = rust_gpu::ahrs::get_g_res(&g_scale);
-            //m_res = rust_gpu::ahrs::get_m_res(&m_scale);
 
             // Calibrate gyro and accelerometers, load biases in bias registers
             calibrate_mpu9250(&i2c, &mut log_file)?;
