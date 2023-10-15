@@ -4,17 +4,8 @@
 // Jules Stuart
 //
 
-use std::{
-    io::Write,
-    thread,
-    time::{Duration},
-    net::TcpStream,
-};
-
-use rppal::{
-    system::DeviceInfo,
-};
-
+use std::{thread, time::Duration};
+use rppal::system::DeviceInfo;
 use rust_gpu::{
     ahrs::Ahrs,
     sockethost::SocketHost,
@@ -22,7 +13,7 @@ use rust_gpu::{
 
 fn main() {
     println!("Welcome to the Rust G.P.U. V0.0!");
-    // println!("Running on a {}.", DeviceInfo::new().expect("Could not get device info.").model());
+    println!("Running on a {}.", DeviceInfo::new().expect("Could not get device info.").model());
 
     // Get current system time in local units
     let current_time = std::time::SystemTime::now();
@@ -38,24 +29,11 @@ fn main() {
         .unwrap();
     println!("Local time: {}", time_string);
 
-    // Set up connection to frontend
-    // let mut output_stream = TcpStream::connect("192.168.77.189:65432")
-    //     .expect("IO Error: Could not connect to visualizer.");
-    let mut output_bytes: [u8; 32] = [0; 32];
-
-    // Replace this with a send() using an output data struct
-    //if output_connected && iterations%10 == 0 {
-    //    
-    //}
-
     // Set up connection to AHRS
-    // let gpu_ahrs = Ahrs::new(&time_string)
-    //     .expect("GPU Error: Error creating AHRS interface.");
-    // println!("Waiting on the AHRS to come up...");
-    // thread::sleep(Duration::from_millis(5000));
-    
-    let mut quaternion: [f64; 4] = [1.0, 0.0, 0.0, 0.0];
-
+    let gpu_ahrs = Ahrs::new(&time_string)
+        .expect("GPU Error: Error creating AHRS interface.");
+    println!("Waiting on the AHRS to come up...");
+    thread::sleep(Duration::from_millis(1000));
 
     // Set up connection to SocketHost
     let socket_host = SocketHost::new(&time_string)
@@ -64,23 +42,6 @@ fn main() {
     let mut iterations: u32 = 0;
 
     loop {
-        // TODO - Refactor this to a pub fn get_lastest_quaternion() that can be called on the AHRS
-        // quaternion = match gpu_ahrs.receiver.as_ref().unwrap().try_recv() {
-        //     Ok(ahrs_quaternion) => ahrs_quaternion,
-        //     Err(_error) => quaternion,
-        // };
-
-        // Write new quaternion to frontend
-        // for i in 0..4 {
-        //     let bytes_to_write = quaternion[i].to_be_bytes();
-        //     for j in 0..8 {
-        //         output_bytes[(8*i)+j] = bytes_to_write[j];
-        //     }
-        // }
-
-        // output_stream.write(&output_bytes)
-        //     .expect("IO Error: Could not write to socket.");
-
         // Check for new Messages from the SocketHost
         // TODO - Refactor this to a pub fn get_message() which gets an Option<Message>
         let message = match socket_host.receiver.as_ref().unwrap().try_recv() {
@@ -88,23 +49,43 @@ fn main() {
                 Err(_error) => None,
         };
 
+        // TODO - replace with an "if let"
         if message.is_some() {
-            let unwrapped_message = message.unwrap();
+            let mut unwrapped_message = message.unwrap();
 
-            let message_response = match unwrapped_message.address.as_ref() {
-                "IDN" => "RUST GPU, V0.0",
-                "RQ" => "1.0 0.0 0.0 0.0",
-                _ => "Unrecognized address",
+            let message_response = match unwrapped_message.address {
+                0x00 => "RUST_GPU_V0.0".as_bytes().to_vec(),
+                0x01 => get_encoded_quaternion(&gpu_ahrs),
+                _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
             };
 
-            println!("Got a message with address: {}", unwrapped_message.address);
-            println!("Going to respond with: {}", message_response);
+            println!("GPU - Got a message with address: {}", unwrapped_message.address);
+            println!("GPU - Going to respond with: {:?}", message_response);
+
+            unwrapped_message.response = message_response;
+
+            socket_host.sender.as_ref().unwrap().send(unwrapped_message)
+                .expect("Could not send data from GPU.");
         }
 
-
         iterations = iterations + 1;
-        println!("{} iterations through the main loop", iterations);
+        // println!("{} iterations through the main loop", iterations);
 
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn get_encoded_quaternion(ahrs: &Ahrs) -> Vec<u8> {
+    // the idea here is that there will be a function of the ahrs get_latest_quaternion;
+    //  in the future, this thread will not need to have a default value for the quaternion
+    let quaternion = match ahrs.receiver.as_ref().unwrap().try_recv() {
+        Ok(ahrs_quaternion) => ahrs_quaternion,
+        Err(_error) => [1.0, 0.0, 0.0, 0.0],
+    };
+    let mut encoded_quaternion = Vec::new();
+    for _i in 0..4 {
+        // https://stackoverflow.com/questions/54142528/how-can-i-concatenate-two-slices-or-two-vectors-and-still-have-access-to-the-ori
+        encoded_quaternion = encoded_quaternion.to_vec().into_iter().chain(quaternion[_i].to_be_bytes()).collect();
+    }
+    encoded_quaternion
 }

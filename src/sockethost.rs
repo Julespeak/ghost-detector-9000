@@ -1,39 +1,18 @@
 use std::{
     error::Error,
     fs::File,
-    io::{
-        prelude::*,
-        Write,
-        BufReader,
-    },
+    io::{prelude::*, Write, BufReader},
     net::TcpListener,
-    sync::{
-        mpsc::{
-            self,
-            Sender,
-            Receiver,
-        }
-    },
+    sync::mpsc::{self, Sender, Receiver},
     thread,
-    time::{
-        Duration,
-        Instant,
-    }
+    time::Instant,
 };
 
-// #[repr(u8)]
-// #[derive(Copy, Clone)]
-// pub enum Mscale {
-//     Mfs14bits = 0, // 0.6 mG per LSB
-//     Mfs16bits, // 0.15 mG per LSB
-// }
-
 // Message structure for socket communication
-//  TODO - I'm using Strings to deal with ownership; can this be done more elegantly?
 pub struct Message {
-    pub address: String,
-    pub request: Vec<String>,
-    pub response: Vec<String>,
+    pub address: u8,
+    pub request: Vec<u8>,
+    pub response: Vec<u8>,
 }
 
 pub struct SocketHost {
@@ -55,11 +34,8 @@ impl SocketHost {
     ///
     /// Would go here eventually...
     pub fn new(time_string: &str) -> Result<SocketHost, Box<dyn Error>> {
-        
         // Set up connection to log file
-        // let log_file_name = format!("/home/ghost/rust-stuff/gpu_logs/{}_sockethost_logfile.txt", time_string);
-        // HACK - change log file location temporarily
-        let log_file_name = format!("dummy_sockethost_logfile.txt");
+        let log_file_name = format!("/home/ghost/rust-stuff/gpu_logs/{}_sockethost_logfile.txt", time_string);
         let mut log_file = File::create(log_file_name)
             .expect("Unable to create SocketHost logfile.");
 
@@ -81,37 +57,43 @@ impl SocketHost {
 pub fn receive_connections(log_file: &mut File, receiver: Receiver<Message>, sender: Sender<Message>) {
     let start = Instant::now();
 
-    let listener = TcpListener::bind("127.0.0.1:9005").unwrap();
+    let listener = TcpListener::bind("ip_address:9005").unwrap();
 
     for stream in listener.incoming() {
         let mut stream = stream.unwrap();
-        let mut buf_reader = BufReader::new(&mut stream);
 
-        let mut raw_input = String::new();
-        let num_bytes = buf_reader.read_line(&mut raw_input)
-            .expect("Error reading from socket.");
+        loop { // Should be able to get out of this loop if the connection dies
+            // First two bytes contain the address and number of bytes in the request
+            let mut raw_input: [u8; 2] = [8; 2];
+            let _num_bytes = stream.read(&mut raw_input)
+                .expect("SocketHost: Error reading from socket.");
 
-        let input_vec: Vec<String> = raw_input.split(" ").map(|x| x.to_string()).collect();
+            let input_address: u8 = raw_input[0];
+            let request_size: usize = raw_input[1].into();
 
-        let input_address: String = input_vec.get(0)
-            .expect("No address provided.").to_string();
+            let mut input_request: Vec<u8> = Vec::new();
+            if request_size > 0 {
+                let mut raw_request: Vec<u8> = vec![0; request_size];
+                let _num_bytes = stream.read(&mut raw_request)
+                    .expect("SocketHost: Error reading from socket.");
+                input_request = raw_request;
+            }
 
-        let input_request: Vec<String> = input_vec.get(1..)
-            .expect("No request provided.").to_vec();
+            let message = Message {
+                address: input_address,
+                request: input_request,
+                response: Vec::new(),
+            };
 
-        println!("Got an address: {}", input_address);
-        println!("Got a request: {:?}", input_request);
+            sender.send(message)
+                .expect("Could not send data back from SocketHost thread.");
 
-        let message = Message {
-            address: input_address,
-            request: input_request,
-            response: Vec::new(),
-        };
+            let return_message = receiver.recv()
+                .expect("No response from GPU.");
 
-        sender.send(message)
-            .expect("Could not send data back from SocketHost thread.");
-
-        // after this there would be a blocking call to the receiver which would wait for a response from the GPU
+            stream.write_all(&return_message.response)
+                .expect("Error writing to socket.");
+        }
     }
 
     let elapsed = start.elapsed();
