@@ -55,7 +55,7 @@ fn main() {
 
             let message_response = match unwrapped_message.address {
                 0x00 => "RUST_GPU_V0.0".as_bytes().to_vec(),
-                0x01 => get_encoded_quaternion(&gpu_ahrs),
+                0x01 => gpu_ahrs.get_latest_quaternion(),
                 _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
             };
 
@@ -73,19 +73,4 @@ fn main() {
 
         thread::sleep(Duration::from_millis(10));
     }
-}
-
-fn get_encoded_quaternion(ahrs: &Ahrs) -> Vec<u8> {
-    // the idea here is that there will be a function of the ahrs get_latest_quaternion;
-    //  in the future, this thread will not need to have a default value for the quaternion
-    let quaternion = match ahrs.receiver.as_ref().unwrap().try_recv() {
-        Ok(ahrs_quaternion) => ahrs_quaternion,
-        Err(_error) => [1.0, 0.0, 0.0, 0.0],
-    };
-    let mut encoded_quaternion = Vec::new();
-    for _i in 0..4 {
-        // https://stackoverflow.com/questions/54142528/how-can-i-concatenate-two-slices-or-two-vectors-and-still-have-access-to-the-ori
-        encoded_quaternion = encoded_quaternion.to_vec().into_iter().chain(quaternion[_i].to_be_bytes()).collect();
-    }
-    encoded_quaternion
 }

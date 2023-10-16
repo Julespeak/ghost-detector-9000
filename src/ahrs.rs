@@ -2,15 +2,9 @@ use std::{
     error::Error,
     fs::File,
     io::Write,
-    sync::{
-        mpsc,
-        mpsc::Sender,
-    },
+    sync::mpsc::{self, Sender, Receiver},
     thread,
-    time::{
-        Duration,
-        Instant,
-    }
+    time::{Duration, Instant},
 };
 
 use rppal::{
@@ -196,14 +190,20 @@ pub struct Mpu9250Calibration {
 
 // some things in this struct should be abstracted one layer deeper
 pub struct Ahrs {
-    pub receiver: Option<mpsc::Receiver<[f64; 4]>>,
+    // Sender sends data to the AHRS
+    pub sender: Option<mpsc::Sender<crate::Message>>,
+    // Receiver gets messages from the AHRS
+    pub receiver: Option<mpsc::Receiver<crate::Message>>,
+    // Thread reference; TODO - use this for doing elegant shutdowns
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Ahrs {
-    /// Create a new AHRS interface.
-    ///
-    /// Hello, world, lol.
+    /// Create a new AHRS interface.  The AHRS spawns a thread which endlessly
+    ///  computes new quaternions using input from the MPU to feed a sensor
+    ///  fustion algorithm.  After each quaternion update, the AHRS thread will
+    ///  check to see if new data has been requested; if so, the AHRS thread
+    ///  will respond with the relevant response.
     ///
     /// # More Documentation
     ///
@@ -232,7 +232,7 @@ impl Ahrs {
             .into_output();
         
         // Set up connection to log file
-        let log_file_name = format!("/home/ghost/rust-stuff/mpu_logs/{}_mpu_logfile.txt", time_string); 
+        let log_file_name = format!("/home/ghost/rust-stuff/gpu_logs/{}_mpu_logfile.txt", time_string); 
         let mut log_file = File::create(log_file_name)
             .expect("Unable to create MPU logfile.");
 
@@ -285,6 +285,8 @@ impl Ahrs {
         }
 
         // Create configuration structure from initialization data
+        // TODO - this should be stored as a property of the AHRS struct; it can be updated
+        //  as necessary (e.g. magnetometer recalibration)
         let calibration = Mpu9250Calibration {
             a_res: get_a_res(&a_scale),
             g_res: get_g_res(&g_scale),
@@ -294,19 +296,40 @@ impl Ahrs {
             mag_scale: mag_scale,
         };
 
-        // spawn a thread to start cranking out quaternions forever
-        let (soci_sender, soci_receiver) = mpsc::channel();
-        let quaternion_thread = thread::spawn(move || compute_quaternions(&mut i2c, &mut log_file, &calibration, soci_sender));
+        // Both the main and the satellite get a sender and receiver
+        let (mosi_sender, mosi_receiver) = mpsc::channel();
+        let (miso_sender, miso_receiver) = mpsc::channel();
+
+        let quaternion_thread = thread::spawn(move || compute_quaternions(&mut i2c, &mut log_file, &calibration, mosi_receiver, miso_sender));
 
         Ok(Ahrs {
-            receiver: Some(soci_receiver),
+            sender: Some(mosi_sender),
+            receiver: Some(miso_receiver),
             thread: Some(quaternion_thread),
         })
+    }
+
+    pub fn get_latest_quaternion(&self) -> Vec<u8> {
+        // Prepare request for new quaternion
+        let message = crate::Message {
+            address: 0x00,
+            request: Vec::new(),
+            response: Vec::new(),
+        };
+        // Send message to AHRS thread
+        // TODO - understand why these as_ref's are necessary
+        self.sender.as_ref().unwrap()
+            .send(message).expect("Could not send data message to AHRS thread.");
+        // Get return message from AHRS thread
+        let return_message = self.receiver.as_ref().unwrap()
+            .recv().expect("No response from AHRS thread.");
+        // Return encoded quaternion
+        return_message.response
     }
 }
 
 /// Compute quaternions forever
-pub fn compute_quaternions(i2c: &mut I2c, log_file: &mut File, calibration: &Mpu9250Calibration, sender: Sender<[f64; 4]>) {
+pub fn compute_quaternions(i2c: &mut I2c, log_file: &mut File, calibration: &Mpu9250Calibration, receiver: Receiver<crate::Message>, sender: Sender<crate::Message>) {
     let start = Instant::now();
 
     let interrupt_pin = Gpio::new()
@@ -425,13 +448,28 @@ pub fn compute_quaternions(i2c: &mut I2c, log_file: &mut File, calibration: &Mpu
         madgwick_quaternion_update(&[ax, ay, az], &[gx*std::f64::consts::PI/180.0, gy*std::f64::consts::PI/180.0, gz*std::f64::consts::PI/180.0], &[my, mx, -mz], &mut q, delta_t)
             .expect("IOError: Error in quaternion update.");
 
-        // TODO - Check to see if the host has 
-        if iterations%10 == 0 {
-           sender.send(q.clone()).expect("Thread Error: Could not send data to client.");
+        // TODO - Refactor this to a pub fn get_message() which gets an Option<Message>
+        let message = match receiver.try_recv() {
+                Ok(ahrs_message) => Some(ahrs_message),
+                Err(_error) => None,
+        };
+
+        // TODO - replace with an "if let"
+        if message.is_some() {
+            let mut unwrapped_message = message.unwrap();
+
+            let message_response = match unwrapped_message.address {
+                0x00 => get_encoded_quaternion(q),
+                _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
+            };
+
+            unwrapped_message.response = message_response;
+
+            sender.send(unwrapped_message)
+                .expect("Could not send data from AHRS.");
         }
 
         iterations = iterations + 1;
-
     }
 
     let elapsed = start.elapsed();
@@ -505,6 +543,14 @@ fn get_m_res(m_scale: &Mscale) -> f64 {
     }
 }
 
+fn get_encoded_quaternion(quaternion: [f64; 4]) -> Vec<u8> {
+    let mut encoded_quaternion = Vec::new();
+    for _i in 0..4 {
+        // https://stackoverflow.com/questions/54142528/how-can-i-concatenate-two-slices-or-two-vectors-and-still-have-access-to-the-ori
+        encoded_quaternion = encoded_quaternion.to_vec().into_iter().chain(quaternion[_i].to_be_bytes()).collect();
+    }
+    encoded_quaternion
+}
 
 /// Funciton which initializes the AK8963
 fn init_ak8963(i2c: &I2c, m_scale: &Mscale, m_mode: u8) -> Result<([f64; 3]), Box<dyn Error>> {
