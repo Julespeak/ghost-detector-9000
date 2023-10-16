@@ -58,8 +58,10 @@ pub fn receive_connections(log_file: &mut File, receiver: Receiver<crate::Messag
         loop { // Should be able to get out of this loop if the connection dies
             // First two bytes contain the address and number of bytes in the request
             let mut raw_input: [u8; 2] = [8; 2];
-            let _num_bytes = stream.read(&mut raw_input)
-                .expect("SocketHost: Error reading from socket.");
+            let _num_bytes = match stream.read(&mut raw_input) {
+                Ok(nb) => nb,
+                Err(_e) => { println!("SocketHost: Error reading from socket."); break }
+            };
 
             let input_address: u8 = raw_input[0];
             let request_size: usize = raw_input[1].into();
@@ -84,8 +86,10 @@ pub fn receive_connections(log_file: &mut File, receiver: Receiver<crate::Messag
             let return_message = receiver.recv()
                 .expect("No response from GPU.");
 
-            stream.write_all(&return_message.response)
-                .expect("Error writing to socket.");
+            match stream.write_all(&return_message.response) {
+                Ok(nb) => nb,
+                Err(_e) => { println!("SocketHost: Error reading from socket."); break }
+            }
         }
     }
 
