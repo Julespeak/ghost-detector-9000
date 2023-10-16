@@ -1,25 +1,18 @@
 use std::{
     error::Error,
     fs::File,
-    io::{prelude::*, Write, BufReader},
+    io::{prelude::*, Write},
     net::TcpListener,
     sync::mpsc::{self, Sender, Receiver},
     thread,
     time::Instant,
 };
 
-// Message structure for socket communication
-pub struct Message {
-    pub address: u8,
-    pub request: Vec<u8>,
-    pub response: Vec<u8>,
-}
-
 pub struct SocketHost {
     // Sender sends data to the SocketHost
-    pub sender: Option<mpsc::Sender<Message>>,
+    pub sender: Option<mpsc::Sender<crate::Message>>,
     // Receiver gets messages from the SocketHost
-    pub receiver: Option<mpsc::Receiver<Message>>,
+    pub receiver: Option<mpsc::Receiver<crate::Message>>,
     // Thread reference; TODO - use this for doing elegant shutdowns
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -54,7 +47,7 @@ impl SocketHost {
 }
 
 /// Wait for a socket connection; when one exists, wait for messages and forward those to the GPU
-pub fn receive_connections(log_file: &mut File, receiver: Receiver<Message>, sender: Sender<Message>) {
+pub fn receive_connections(log_file: &mut File, receiver: Receiver<crate::Message>, sender: Sender<crate::Message>) {
     let start = Instant::now();
 
     let listener = TcpListener::bind("ip_address:9005").unwrap();
@@ -79,7 +72,7 @@ pub fn receive_connections(log_file: &mut File, receiver: Receiver<Message>, sen
                 input_request = raw_request;
             }
 
-            let message = Message {
+            let message = crate::Message {
                 address: input_address,
                 request: input_request,
                 response: Vec::new(),

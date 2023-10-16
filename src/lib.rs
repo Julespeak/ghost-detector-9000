@@ -14,3 +14,10 @@ pub const GPIO_LED: u8 = 17;
 
 // GPIO pin connected to INT for creating hardware interrupt to read new data
 pub const MPU_INT: u8 = 5;
+
+// Message structure for channel communication
+pub struct Message {
+    pub address: u8,
+    pub request: Vec<u8>,
+    pub response: Vec<u8>,
+}
