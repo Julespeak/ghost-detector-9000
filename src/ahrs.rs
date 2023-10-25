@@ -448,6 +448,12 @@ pub fn compute_quaternions(i2c: &mut I2c, log_file: &mut File, calibration: &Mpu
         madgwick_quaternion_update(&[ax, ay, az], &[gx*std::f64::consts::PI/180.0, gy*std::f64::consts::PI/180.0, gz*std::f64::consts::PI/180.0], &[my, mx, -mz], &mut q, delta_t)
             .expect("IOError: Error in quaternion update.");
 
+        // Write new quaternion to log file
+        write!(log_file, "DATA: quat, 4, 1\n")
+            .expect("IOError: Error writing to log file.");
+        write!(log_file, "{} {} {} {}\n", q[0], q[1], q[2], q[3])
+            .expect("IOError: Error writing to log file.");
+
         // TODO - Refactor this to a pub fn get_message() which gets an Option<Message>
         let message = match receiver.try_recv() {
                 Ok(ahrs_message) => Some(ahrs_message),
