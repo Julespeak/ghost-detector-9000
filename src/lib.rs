@@ -1,9 +1,11 @@
 pub mod ahrs;
 pub mod sockethost;
+pub mod emfhost;
 
 // Addresses of the chips on the board that I have; determined with i2cdetect
 pub const ADDR_MPU9265: u16 = 0x68;
 pub const ADDR_AK8963:  u16 = 0x0C;
+pub const ADDR_ADS1115: u16 = 0x48;
 
 //////////
 // GPIO //

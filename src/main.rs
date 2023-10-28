@@ -9,6 +9,7 @@ use rppal::system::DeviceInfo;
 use rust_gpu::{
     ahrs::Ahrs,
     sockethost::SocketHost,
+    emfhost::EmfHost,
 };
 
 fn main() {
@@ -35,9 +36,16 @@ fn main() {
     println!("Waiting on the AHRS to come up...");
     thread::sleep(Duration::from_millis(1000));
 
+    // Set up connection to EMF detector
+    let gpu_emf = EmfHost::new(&time_string);
+    println!("Waiting on the EMF host to come up...");
+    thread::sleep(Duration::from_millis(1000));
+
     // Set up connection to SocketHost
     let socket_host = SocketHost::new(&time_string)
         .expect("GPU Error: Error creating SocketHost interface.");
+
+    println!("Rust G.P.U. is alive; beginning main loop...");
 
     let mut iterations: u32 = 0;
 
@@ -56,6 +64,7 @@ fn main() {
             let message_response = match unwrapped_message.address {
                 0x00 => "RUST_GPU_V0.0".as_bytes().to_vec(),
                 0x01 => gpu_ahrs.get_latest_quaternion(),
+                0x02 => gpu_emf.get_adc_voltage(),
                 _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
             };
 
