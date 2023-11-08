@@ -4,7 +4,7 @@
 // Jules Stuart
 //
 
-use std::{thread, time::Duration};
+use std::{env, thread, time::Duration};
 use rppal::system::DeviceInfo;
 use rust_gpu::{
     ahrs::Ahrs,
@@ -15,6 +15,12 @@ use rust_gpu::{
 fn main() {
     println!("Welcome to the Rust G.P.U. V0.0!");
     println!("Running on a {}.", DeviceInfo::new().expect("Could not get device info.").model());
+
+    let args: Vec<String> = env::args().collect();
+    let mut verbose = false;
+    if args.contains(&String::from("-v")) {
+        verbose = true;
+    }
 
     // Get current system time in local units
     let current_time = std::time::SystemTime::now();
@@ -31,7 +37,7 @@ fn main() {
     println!("Local time: {}", time_string);
 
     // Set up connection to AHRS
-    let gpu_ahrs = Ahrs::new(&time_string)
+    let gpu_ahrs = Ahrs::new(&time_string, verbose)
         .expect("GPU Error: Error creating AHRS interface.");
     println!("Waiting on the AHRS to come up...");
     thread::sleep(Duration::from_millis(1000));

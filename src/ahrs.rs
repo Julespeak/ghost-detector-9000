@@ -208,7 +208,7 @@ impl Ahrs {
     /// # More Documentation
     ///
     /// Would go here eventually...
-    pub fn new(time_string: &str) -> Result<Ahrs, Box<dyn Error>> {
+    pub fn new(time_string: &str, verbose: bool) -> Result<Ahrs, Box<dyn Error>> {
         // Set sensor resolution
         let a_scale: Ascale = Ascale::Afs2g;
         let g_scale: Gscale = Gscale::Gfs250dps;
@@ -270,8 +270,8 @@ impl Ahrs {
                 //write!(log_file, "DEBUG: Magnetometer scale correction: {:?}\n", mag_scale)
                 //    .expect("Error writing to log file.");
                 // use previously calculated calibration values
-                mag_bias = [-200.515625, 93.515625, 78.1171875];
-                mag_scale = [0.9703703703703703, 1.0155038759689923, 1.0155038759689923];
+                mag_bias = [-85.5859375, 286.69921875, 39.05859375];
+                mag_scale = [1.003875968992248, 0.9961538461538462, 1.0];
             } else {
                 panic!("Could not connect to AK8963.");
             }
@@ -300,7 +300,16 @@ impl Ahrs {
         let (mosi_sender, mosi_receiver) = mpsc::channel();
         let (miso_sender, miso_receiver) = mpsc::channel();
 
-        let quaternion_thread = thread::spawn(move || compute_quaternions(&mut i2c, &mut log_file, &calibration, mosi_receiver, miso_sender));
+        let quaternion_thread = thread::spawn(move ||
+            compute_quaternions(
+                &mut i2c,
+                &mut log_file,
+                verbose,
+                &calibration,
+                mosi_receiver,
+                miso_sender
+            )
+        );
 
         Ok(Ahrs {
             sender: Some(mosi_sender),
@@ -329,7 +338,14 @@ impl Ahrs {
 }
 
 /// Compute quaternions forever
-pub fn compute_quaternions(i2c: &mut I2c, log_file: &mut File, calibration: &Mpu9250Calibration, receiver: Receiver<crate::Message>, sender: Sender<crate::Message>) {
+pub fn compute_quaternions(
+    i2c: &mut I2c,
+    log_file: &mut File,
+    verbose: bool,
+    calibration: &Mpu9250Calibration,
+    receiver: Receiver<crate::Message>,
+    sender: Sender<crate::Message>
+    ) {
     let start = Instant::now();
 
     let interrupt_pin = Gpio::new()
@@ -389,18 +405,22 @@ pub fn compute_quaternions(i2c: &mut I2c, log_file: &mut File, calibration: &Mpu
             ax = (raw_mpu_data[0] as f64) * calibration.a_res;
             ay = (raw_mpu_data[1] as f64) * calibration.a_res;
             az = (raw_mpu_data[2] as f64) * calibration.a_res;
-            write!(log_file, "DATA: accel_data, 3, 1\n")
-                .expect("IOError: Error writing to log file.");
-            write!(log_file, "{} {} {}\n", ax, ay, az)
-                .expect("IOError: Error writing to log file.");
+            if verbose {
+                write!(log_file, "DATA: accel_data, 3, 1\n")
+                    .expect("IOError: Error writing to log file.");
+                write!(log_file, "{} {} {}\n", ax, ay, az)
+                    .expect("IOError: Error writing to log file.");
+            }
 
             gx = (raw_mpu_data[4] as f64) * calibration.g_res;
             gy = (raw_mpu_data[5] as f64) * calibration.g_res;
             gz = (raw_mpu_data[6] as f64) * calibration.g_res;
-            write!(log_file, "DATA: gyro_data, 3, 1\n")
-                .expect("IOError: Error writing to log file.");
-            write!(log_file, "{} {} {}\n", gx, gy, gz)
-                .expect("IOError: Error writing to log file.");
+            if verbose {
+                write!(log_file, "DATA: gyro_data, 3, 1\n")
+                    .expect("IOError: Error writing to log file.");
+                write!(log_file, "{} {} {}\n", gx, gy, gz)
+                    .expect("IOError: Error writing to log file.");
+            }
         }
 
         i2c.set_slave_address(crate::ADDR_AK8963)
@@ -429,10 +449,12 @@ pub fn compute_quaternions(i2c: &mut I2c, log_file: &mut File, calibration: &Mpu
             mz = ((raw_mag_data[2] as f64) * calibration.mag_calibration[2] - calibration.mag_bias[2])
                 * calibration.mag_scale[2] * calibration.m_res;
 
-            write!(log_file, "DATA: mag_data, 3, 1\n")
-                .expect("IOError: Error writing to log file.");
-            write!(log_file, "{} {} {}\n", mx, my, mz)
-                .expect("IOError: Error writing to log file.");
+            if verbose {
+                write!(log_file, "DATA: mag_data, 3, 1\n")
+                    .expect("IOError: Error writing to log file.");
+                write!(log_file, "{} {} {}\n", mx, my, mz)
+                    .expect("IOError: Error writing to log file.");
+            }
         }
 
         // Sensors x (y)-axis of the accelerometer/gyro is aligned with the y (x)-axis of the magnetometer;
@@ -440,19 +462,22 @@ pub fn compute_quaternions(i2c: &mut I2c, log_file: &mut File, calibration: &Mpu
         let current_update_time: u64 = start.elapsed().as_nanos() as u64;
         let delta_t: f64 = (current_update_time - last_update_time) as f64 / 1000000000.0;
         last_update_time = current_update_time;
-        write!(log_file, "DATA: update_period, 1, 1\n")
-            .expect("IOError: Error writing to log file.");
-        write!(log_file, "{}\n", delta_t)
-            .expect("IOError: Error writing to log file.");
+        if verbose {
+            write!(log_file, "DATA: update_period, 1, 1\n")
+                .expect("IOError: Error writing to log file.");
+            write!(log_file, "{}\n", delta_t)
+                .expect("IOError: Error writing to log file.");
+        }
 
         madgwick_quaternion_update(&[ax, ay, az], &[gx*std::f64::consts::PI/180.0, gy*std::f64::consts::PI/180.0, gz*std::f64::consts::PI/180.0], &[my, mx, -mz], &mut q, delta_t)
             .expect("IOError: Error in quaternion update.");
 
-        // Write new quaternion to log file
-        write!(log_file, "DATA: quat, 4, 1\n")
-            .expect("IOError: Error writing to log file.");
-        write!(log_file, "{} {} {} {}\n", q[0], q[1], q[2], q[3])
-            .expect("IOError: Error writing to log file.");
+        if verbose {
+            write!(log_file, "DATA: quat, 4, 1\n")
+                .expect("IOError: Error writing to log file.");
+            write!(log_file, "{} {} {} {}\n", q[0], q[1], q[2], q[3])
+                .expect("IOError: Error writing to log file.");
+        }
 
         // TODO - Refactor this to a pub fn get_message() which gets an Option<Message>
         let message = match receiver.try_recv() {
