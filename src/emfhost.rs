@@ -1,7 +1,7 @@
 use std::{
     fs::File,
     io::Write,
-    sync::mpsc::{self, Sender, Receiver},
+    sync::{mpsc::{self, Sender, Receiver}, Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -26,28 +26,32 @@ impl EmfHost {
     /// # More Documentation
     ///
     /// Would go here eventually...
-    pub fn new(time_string: &str) -> EmfHost {
+    pub fn new(time_string: &str, i2c: Arc<Mutex<I2c>>) -> EmfHost {
         // Connect using I2C bus #0; this will soon be replaced with a mutex reference
-        let mut i2c = I2c::with_bus(0)
-            .expect("Could not create I2C device.");
+        // let mut i2c = I2c::with_bus(0)
+        //     .expect("Could not create I2C device.");
         
         // Set up connection to log file
         let log_file_name = format!("/home/ghost/rust-stuff/gpu_logs/{}_emf_logfile.txt", time_string); 
         let mut log_file = File::create(log_file_name)
             .expect("Unable to create EMF logfile.");
 
-        // Set the address of the ADS1115
-        i2c.set_slave_address(crate::ADDR_ADS1115)
-            .expect("Unable to set I2C address.");
+        {
+            // Aquire mutex for access to the I2C hardware
+            let mut i2c = i2c.lock().unwrap();
+            // Set the address of the ADS1115
+            i2c.set_slave_address(crate::ADDR_ADS1115)
+                .expect("Unable to set I2C address.");
 
-        // Configure the ADC mdoule
-        configure_ads1115(&i2c, &mut log_file);
+            // Configure the ADC mdoule
+            configure_ads1115(&i2c, &mut log_file);
+        }
 
         // Both the main and the satellite get a sender and receiver
         let (mosi_sender, mosi_receiver) = mpsc::channel();
         let (miso_sender, miso_receiver) = mpsc::channel();
 
-        let emfhost_thread = thread::spawn(move || read_emf_data(&mut i2c, &mut log_file, mosi_receiver, miso_sender));
+        let emfhost_thread = thread::spawn(move || read_emf_data(i2c, &mut log_file, mosi_receiver, miso_sender));
 
         EmfHost {
             sender: Some(mosi_sender),
@@ -76,7 +80,12 @@ impl EmfHost {
 }
 
 /// Compute quaternions forever
-pub fn read_emf_data(i2c: &mut I2c, log_file: &mut File, receiver: Receiver<crate::Message>, sender: Sender<crate::Message>) {
+pub fn read_emf_data(
+    i2c: Arc<Mutex<I2c>>,
+    log_file: &mut File,
+    receiver: Receiver<crate::Message>,
+    sender: Sender<crate::Message>
+    ) {
     let start = Instant::now();
     // let mut last_update_time: u64 = 0;
 
@@ -97,7 +106,10 @@ pub fn read_emf_data(i2c: &mut I2c, log_file: &mut File, receiver: Receiver<crat
             let mut unwrapped_message = message.unwrap();
 
             let message_response = match unwrapped_message.address {
-                0x00 => read_adc_voltage(i2c).to_be_bytes().into_iter().collect(),
+                0x00 => {
+                    let mut i2c = i2c.lock().unwrap();
+                    read_adc_voltage(&mut i2c).to_be_bytes().into_iter().collect()
+                },
                 _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
             };
 
@@ -165,7 +177,7 @@ fn configure_ads1115(i2c: &I2c, log_file: &mut File) {
 /// Function which reads ADC data from the ADS1115
 fn read_adc_voltage(i2c: &mut I2c) -> f64 {
     i2c.set_slave_address(crate::ADDR_ADS1115)
-        .expect("I2C Error: Unable to change address.");
+        .expect("Unable to set I2C address.");
     
     // Read from conversion register
     let mut reg = [0u8; 2];

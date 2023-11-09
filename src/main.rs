@@ -4,8 +4,8 @@
 // Jules Stuart
 //
 
-use std::{env, thread, time::Duration};
-use rppal::system::DeviceInfo;
+use std::{env, thread, time::Duration, sync::{Arc, Mutex}};
+use rppal::{system::DeviceInfo, i2c::I2c};
 use rust_gpu::{
     ahrs::Ahrs,
     sockethost::SocketHost,
@@ -36,14 +36,19 @@ fn main() {
         .unwrap();
     println!("Local time: {}", time_string);
 
+    // Set up I2C hardware interface
+    let i2c = I2c::with_bus(0)
+        .expect("GPU Error: Could not create I2C device.");
+    let i2c = Arc::new(Mutex::new(i2c));
+
     // Set up connection to AHRS
-    let gpu_ahrs = Ahrs::new(&time_string, verbose)
+    let gpu_ahrs = Ahrs::new(&time_string, verbose, Arc::clone(&i2c))
         .expect("GPU Error: Error creating AHRS interface.");
     println!("Waiting on the AHRS to come up...");
     thread::sleep(Duration::from_millis(1000));
 
     // Set up connection to EMF detector
-    let gpu_emf = EmfHost::new(&time_string);
+    let gpu_emf = EmfHost::new(&time_string, Arc::clone(&i2c));
     println!("Waiting on the EMF host to come up...");
     thread::sleep(Duration::from_millis(1000));
 

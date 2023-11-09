@@ -2,7 +2,7 @@ use std::{
     error::Error,
     fs::File,
     io::Write,
-    sync::mpsc::{self, Sender, Receiver},
+    sync::{mpsc::{self, Sender, Receiver}, Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -208,7 +208,7 @@ impl Ahrs {
     /// # More Documentation
     ///
     /// Would go here eventually...
-    pub fn new(time_string: &str, verbose: bool) -> Result<Ahrs, Box<dyn Error>> {
+    pub fn new(time_string: &str, verbose: bool, i2c: Arc<Mutex<I2c>>) -> Result<Ahrs, Box<dyn Error>> {
         // Set sensor resolution
         let a_scale: Ascale = Ascale::Afs2g;
         let g_scale: Gscale = Gscale::Gfs250dps;
@@ -222,7 +222,7 @@ impl Ahrs {
         let mag_scale: [f64; 3]; // measured magnetometer scale correction
 
         // Connect using I2C bus #0
-        let mut i2c = I2c::with_bus(0)?;
+        // let mut i2c = I2c::with_bus(0)?;
 
         // Set up IO connections
         let mut led = Gpio::new()
@@ -236,52 +236,58 @@ impl Ahrs {
         let mut log_file = File::create(log_file_name)
             .expect("Unable to create MPU logfile.");
 
-        // Set the address of the MPU-9250
-        i2c.set_slave_address(crate::ADDR_MPU9265)?;
+        {
+            // Aquire mutex for access to the I2C hardware
+            let mut i2c = i2c.lock().unwrap();
+            // Set the address of the MPU-9250
+            i2c.set_slave_address(crate::ADDR_MPU9265)
+                .expect("Unable to set I2C address.");
 
-        // Read the WHO_AM_I register and check the result
-        let mut reg = [0u8; 1];
-        i2c.block_read(WHO_AM_I_MPU9250 as u8, &mut reg)?;
+            // Read the WHO_AM_I register and check the result
+            let mut reg = [0u8; 1];
+            i2c.block_read(WHO_AM_I_MPU9250 as u8, &mut reg)
+                .expect("I2C read error");
 
-        if reg[0] == 0x71 {
-            println!("Successfully connected to MPU-9250!");
+            if reg[0] == 0x71 {
+                println!("Successfully connected to MPU-9250!");
 
-            // Calibrate gyro and accelerometers, load biases in bias registers
-            calibrate_mpu9250(&i2c, &mut log_file)?;
+                // Calibrate gyro and accelerometers, load biases in bias registers
+                calibrate_mpu9250(&i2c, &mut log_file)?;
 
-            // Initialize the MPU9050
-            // TODO - the ownership of a_scale and g_scale could go to this function instead
-            init_mpu9250(&i2c, &a_scale, &g_scale)?;
+                // Initialize the MPU9050
+                // TODO - the ownership of a_scale and g_scale could go to this function instead
+                init_mpu9250(&i2c, &a_scale, &g_scale)?;
 
-            // read the WHO_AM_I register of the magnetometer, this is a good test of communication
-            i2c.set_slave_address(crate::ADDR_AK8963)?;
-            i2c.block_read(AK8963_WHO_AM_I as u8, &mut reg).expect("Error writing to magnetometer");
-            if reg[0] == 0x48 {
-                println!("Successfully connected to AK8963!");
+                // read the WHO_AM_I register of the magnetometer, this is a good test of communication
+                i2c.set_slave_address(crate::ADDR_AK8963)?;
+                i2c.block_read(AK8963_WHO_AM_I as u8, &mut reg).expect("Error writing to magnetometer");
+                if reg[0] == 0x48 {
+                    println!("Successfully connected to AK8963!");
 
-                // TODO - the ownership of m_scale could go to this function instead
-                mag_calibration = init_ak8963(&i2c, &m_scale, m_mode)?;
-                write!(log_file, "DEBUG: Magnetometer factory calibration: {:?}\n", mag_calibration)
-                    .expect("Error writing to log file.");
+                    // TODO - the ownership of m_scale could go to this function instead
+                    mag_calibration = init_ak8963(&i2c, &m_scale, m_mode)?;
+                    write!(log_file, "DEBUG: Magnetometer factory calibration: {:?}\n", mag_calibration)
+                        .expect("Error writing to log file.");
 
-                //(mag_bias, mag_scale) = calibrate_ak8963(&i2c, &mag_calibration, &mut log_file)?;
-                //write!(log_file, "DEBUG: Magnetometer bias correction: {:?}\n", mag_bias)
-                //    .expect("Error writing to log file.");
-                //write!(log_file, "DEBUG: Magnetometer scale correction: {:?}\n", mag_scale)
-                //    .expect("Error writing to log file.");
-                // use previously calculated calibration values
-                mag_bias = [-85.5859375, 286.69921875, 39.05859375];
-                mag_scale = [1.003875968992248, 0.9961538461538462, 1.0];
+                    //(mag_bias, mag_scale) = calibrate_ak8963(&i2c, &mag_calibration, &mut log_file)?;
+                    //write!(log_file, "DEBUG: Magnetometer bias correction: {:?}\n", mag_bias)
+                    //    .expect("Error writing to log file.");
+                    //write!(log_file, "DEBUG: Magnetometer scale correction: {:?}\n", mag_scale)
+                    //    .expect("Error writing to log file.");
+                    // use previously calculated calibration values
+                    mag_bias = [-85.5859375, 286.69921875, 39.05859375];
+                    mag_scale = [1.003875968992248, 0.9961538461538462, 1.0];
+                } else {
+                    panic!("Could not connect to AK8963.");
+                }
+
+                // Blink the LED by setting the pin's logic level high for 500 ms.
+                led.set_high();
+                thread::sleep(Duration::from_millis(500));
+                led.set_low();
             } else {
-                panic!("Could not connect to AK8963.");
+                panic!("Could not connect to MPU-9250.");
             }
-
-            // Blink the LED by setting the pin's logic level high for 500 ms.
-            led.set_high();
-            thread::sleep(Duration::from_millis(500));
-            led.set_low();
-        } else {
-            panic!("Could not connect to MPU-9250.");
         }
 
         // Create configuration structure from initialization data
@@ -302,7 +308,7 @@ impl Ahrs {
 
         let quaternion_thread = thread::spawn(move ||
             compute_quaternions(
-                &mut i2c,
+                i2c,
                 &mut log_file,
                 verbose,
                 &calibration,
@@ -339,7 +345,7 @@ impl Ahrs {
 
 /// Compute quaternions forever
 pub fn compute_quaternions(
-    i2c: &mut I2c,
+    i2c: Arc<Mutex<I2c>>,
     log_file: &mut File,
     verbose: bool,
     calibration: &Mpu9250Calibration,
@@ -365,9 +371,6 @@ pub fn compute_quaternions(
     let mut gx: f64 = 0.0;
     let mut gy: f64 = 0.0;
     let mut gz: f64 = 0.0;
-    let mut mx: f64 = 0.0;
-    let mut my: f64 = 0.0;
-    let mut mz: f64 = 0.0;
 
     let mut q: [f64; 4] = [1.0, 0.0, 0.0, 0.0];
 
@@ -386,16 +389,23 @@ pub fn compute_quaternions(
 
     // TODO - there should be a way out of this loop when a close method is invoked
     loop {
-        i2c.set_slave_address(crate::ADDR_MPU9265)
-            .expect("I2C Error: Unable to change address.");
+
+        // TODO - could probably get rid of this check and just assume that there is new data; check this against latest performance
         if interrupt_pin.is_high() { // If new data is available, read it in
             if mpu_reads < TOTAL_READS-1 {
                 mpu_sample_start[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
             }
 
-            // Read data from MPU
-            read_mpu_data(&i2c, &mut raw_mpu_data)
-                .expect("I2C Error: Error reading from MPU.");
+            {
+                // Aquire mutex for access to the I2C hardware
+                let mut i2c = i2c.lock().unwrap();
+                // Set the address of the MPU-9250
+                i2c.set_slave_address(crate::ADDR_MPU9265)
+                    .expect("Unable to set I2C address.");
+                // Read data from MPU
+                read_mpu_data(&i2c, &mut raw_mpu_data)
+                    .expect("I2C Error: Error reading from MPU.");
+            }
 
             if mpu_reads < TOTAL_READS-1 {
                 mpu_sample_stop[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
@@ -423,13 +433,16 @@ pub fn compute_quaternions(
             }
         }
 
-        i2c.set_slave_address(crate::ADDR_AK8963)
-            .expect("I2C Error: Unable to change address.");
-        i2c.block_read(AK8963_ST1 as u8, &mut dummy_data)
-            .expect("I2C Error: Error reading from magnetometer.");
+        {
+            // Aquire mutex for access to the I2C hardware
+            let mut i2c = i2c.lock().unwrap();
+            // Set the address of the AK8963
+            i2c.set_slave_address(crate::ADDR_AK8963)
+                .expect("Unable to set I2C address.");
+            i2c.block_read(AK8963_ST1 as u8, &mut dummy_data)
+                .expect("I2C Error: Error reading from magnetometer.");
 
-        // TODO - This check for new data is redundant with the one inside the read_mag_data function
-        if dummy_data[0] & 0x01 == 0x01 { // If new data is available, read it in
+
             if mpu_reads < TOTAL_READS-1 {
                mag_sample_start[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
             }
@@ -437,24 +450,24 @@ pub fn compute_quaternions(
             // Read data from magnetometer
             read_mag_data(&i2c, &mut raw_mag_data)
                 .expect("I2C Error: Error reading from magnetometer.");
+        }
 
-            if mpu_reads < TOTAL_READS-1 {
-                mag_sample_stop[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
-            }
+        if mpu_reads < TOTAL_READS-1 {
+            mag_sample_stop[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
+        }
 
-            mx = ((raw_mag_data[0] as f64) * calibration.mag_calibration[0] - calibration.mag_bias[0])
-                * calibration.mag_scale[0] * calibration.m_res;
-            my = ((raw_mag_data[1] as f64) * calibration.mag_calibration[1] - calibration.mag_bias[1])
-                * calibration.mag_scale[1] * calibration.m_res;
-            mz = ((raw_mag_data[2] as f64) * calibration.mag_calibration[2] - calibration.mag_bias[2])
-                * calibration.mag_scale[2] * calibration.m_res;
+        let mx: f64 = ((raw_mag_data[0] as f64) * calibration.mag_calibration[0] - calibration.mag_bias[0])
+            * calibration.mag_scale[0] * calibration.m_res;
+        let my: f64 = ((raw_mag_data[1] as f64) * calibration.mag_calibration[1] - calibration.mag_bias[1])
+            * calibration.mag_scale[1] * calibration.m_res;
+        let mz: f64 = ((raw_mag_data[2] as f64) * calibration.mag_calibration[2] - calibration.mag_bias[2])
+            * calibration.mag_scale[2] * calibration.m_res;
 
-            if verbose {
-                write!(log_file, "DATA: mag_data, 3, 1\n")
-                    .expect("IOError: Error writing to log file.");
-                write!(log_file, "{} {} {}\n", mx, my, mz)
-                    .expect("IOError: Error writing to log file.");
-            }
+        if verbose {
+            write!(log_file, "DATA: mag_data, 3, 1\n")
+                .expect("IOError: Error writing to log file.");
+            write!(log_file, "{} {} {}\n", mx, my, mz)
+                .expect("IOError: Error writing to log file.");
         }
 
         // Sensors x (y)-axis of the accelerometer/gyro is aligned with the y (x)-axis of the magnetometer;
