@@ -208,99 +208,20 @@ impl Ahrs {
     /// # More Documentation
     ///
     /// Would go here eventually...
-    pub fn new(time_string: &str, verbose: bool, i2c: Arc<Mutex<I2c>>) -> Result<Ahrs, Box<dyn Error>> {
-        // Set sensor resolution
-        let a_scale: Ascale = Ascale::Afs2g;
-        let g_scale: Gscale = Gscale::Gfs250dps;
-        let m_scale: Mscale = Mscale::Mfs16bits; // Choose either 14-bit or 16-bit magnetometer resolution
-
-        // Specify magnetometer full scale
-        let m_mode: u8 = 0x02; // 2 for 8 Hz, 6 for 100 Hz continuous magnetometer data read
-
-        let mag_calibration: [f64; 3]; // factory magnetometer calibration
-        let mag_bias: [f64; 3]; // measured magnetometer bias correction
-        let mag_scale: [f64; 3]; // measured magnetometer scale correction
-
-        // Connect using I2C bus #0
-        // let mut i2c = I2c::with_bus(0)?;
-
-        // Set up IO connections
-        let mut led = Gpio::new()
-            .expect("GPIO Error: Unable to connect to GPIO manager.")
-            .get(crate::GPIO_LED)
-            .expect("GPIO Error: Unable to get GPIO_LED pin.")
-            .into_output();
-        
+    pub fn new(time_string: &str, verbose: bool, i2c: Arc<Mutex<I2c>>) -> Ahrs {  
         // Set up connection to log file
         let log_file_name = format!("/home/ghost/rust-stuff/gpu_logs/{}_mpu_logfile.txt", time_string); 
         let mut log_file = File::create(log_file_name)
             .expect("Unable to create MPU logfile.");
 
+        let mut calibration: Mpu9250Calibration;
+
         {
             // Aquire mutex for access to the I2C hardware
             let mut i2c = i2c.lock().unwrap();
-            // Set the address of the MPU-9250
-            i2c.set_slave_address(crate::ADDR_MPU9265)
-                .expect("Unable to set I2C address.");
-
-            // Read the WHO_AM_I register and check the result
-            let mut reg = [0u8; 1];
-            i2c.block_read(WHO_AM_I_MPU9250 as u8, &mut reg)
-                .expect("I2C read error");
-
-            if reg[0] == 0x71 {
-                println!("Successfully connected to MPU-9250!");
-
-                // Calibrate gyro and accelerometers, load biases in bias registers
-                calibrate_mpu9250(&i2c, &mut log_file)?;
-
-                // Initialize the MPU9050
-                // TODO - the ownership of a_scale and g_scale could go to this function instead
-                init_mpu9250(&i2c, &a_scale, &g_scale)?;
-
-                // read the WHO_AM_I register of the magnetometer, this is a good test of communication
-                i2c.set_slave_address(crate::ADDR_AK8963)?;
-                i2c.block_read(AK8963_WHO_AM_I as u8, &mut reg).expect("Error writing to magnetometer");
-                if reg[0] == 0x48 {
-                    println!("Successfully connected to AK8963!");
-
-                    // TODO - the ownership of m_scale could go to this function instead
-                    mag_calibration = init_ak8963(&i2c, &m_scale, m_mode)?;
-                    write!(log_file, "DEBUG: Magnetometer factory calibration: {:?}\n", mag_calibration)
-                        .expect("Error writing to log file.");
-
-                    //(mag_bias, mag_scale) = calibrate_ak8963(&i2c, &mag_calibration, &mut log_file)?;
-                    //write!(log_file, "DEBUG: Magnetometer bias correction: {:?}\n", mag_bias)
-                    //    .expect("Error writing to log file.");
-                    //write!(log_file, "DEBUG: Magnetometer scale correction: {:?}\n", mag_scale)
-                    //    .expect("Error writing to log file.");
-                    // use previously calculated calibration values
-                    mag_bias = [-85.5859375, 286.69921875, 39.05859375];
-                    mag_scale = [1.003875968992248, 0.9961538461538462, 1.0];
-                } else {
-                    panic!("Could not connect to AK8963.");
-                }
-
-                // Blink the LED by setting the pin's logic level high for 500 ms.
-                led.set_high();
-                thread::sleep(Duration::from_millis(500));
-                led.set_low();
-            } else {
-                panic!("Could not connect to MPU-9250.");
-            }
+            // On initialization, use last known magnetometer correction (mag_cal = false)
+            calibration = initialize_ahrs(&mut i2c, &mut log_file, false);
         }
-
-        // Create configuration structure from initialization data
-        // TODO - this should be stored as a property of the AHRS struct; it can be updated
-        //  as necessary (e.g. magnetometer recalibration)
-        let calibration = Mpu9250Calibration {
-            a_res: get_a_res(&a_scale),
-            g_res: get_g_res(&g_scale),
-            m_res: get_m_res(&m_scale),
-            mag_calibration: mag_calibration,
-            mag_bias: mag_bias,
-            mag_scale: mag_scale,
-        };
 
         // Both the main and the satellite get a sender and receiver
         let (mosi_sender, mosi_receiver) = mpsc::channel();
@@ -311,17 +232,17 @@ impl Ahrs {
                 i2c,
                 &mut log_file,
                 verbose,
-                &calibration,
+                &mut calibration,
                 mosi_receiver,
                 miso_sender
             )
         );
 
-        Ok(Ahrs {
+        Ahrs {
             sender: Some(mosi_sender),
             receiver: Some(miso_receiver),
             thread: Some(quaternion_thread),
-        })
+        }
     }
 
     pub fn get_latest_quaternion(&self) -> Vec<u8> {
@@ -348,7 +269,7 @@ pub fn compute_quaternions(
     i2c: Arc<Mutex<I2c>>,
     log_file: &mut File,
     verbose: bool,
-    calibration: &Mpu9250Calibration,
+    calibration: &mut Mpu9250Calibration,
     receiver: Receiver<crate::Message>,
     sender: Sender<crate::Message>
     ) {
@@ -403,8 +324,7 @@ pub fn compute_quaternions(
                 i2c.set_slave_address(crate::ADDR_MPU9265)
                     .expect("Unable to set I2C address.");
                 // Read data from MPU
-                read_mpu_data(&i2c, &mut raw_mpu_data)
-                    .expect("I2C Error: Error reading from MPU.");
+                read_mpu_data(&i2c, &mut raw_mpu_data);
             }
 
             if mpu_reads < TOTAL_READS-1 {
@@ -417,9 +337,9 @@ pub fn compute_quaternions(
             az = (raw_mpu_data[2] as f64) * calibration.a_res;
             if verbose {
                 write!(log_file, "DATA: accel_data, 3, 1\n")
-                    .expect("IOError: Error writing to log file.");
+                    .expect("Ahrs: Error writing to log file.");
                 write!(log_file, "{} {} {}\n", ax, ay, az)
-                    .expect("IOError: Error writing to log file.");
+                    .expect("Ahrs: Error writing to log file.");
             }
 
             gx = (raw_mpu_data[4] as f64) * calibration.g_res;
@@ -427,9 +347,9 @@ pub fn compute_quaternions(
             gz = (raw_mpu_data[6] as f64) * calibration.g_res;
             if verbose {
                 write!(log_file, "DATA: gyro_data, 3, 1\n")
-                    .expect("IOError: Error writing to log file.");
+                    .expect("Ahrs: Error writing to log file.");
                 write!(log_file, "{} {} {}\n", gx, gy, gz)
-                    .expect("IOError: Error writing to log file.");
+                    .expect("Ahrs: Error writing to log file.");
             }
         }
 
@@ -440,7 +360,7 @@ pub fn compute_quaternions(
             i2c.set_slave_address(crate::ADDR_AK8963)
                 .expect("Unable to set I2C address.");
             i2c.block_read(AK8963_ST1 as u8, &mut dummy_data)
-                .expect("I2C Error: Error reading from magnetometer.");
+                .expect("Ahrs: Error reading from magnetometer.");
 
 
             if mpu_reads < TOTAL_READS-1 {
@@ -448,8 +368,7 @@ pub fn compute_quaternions(
             }
 
             // Read data from magnetometer
-            read_mag_data(&i2c, &mut raw_mag_data)
-                .expect("I2C Error: Error reading from magnetometer.");
+            read_mag_data(&i2c, &mut raw_mag_data);
         }
 
         if mpu_reads < TOTAL_READS-1 {
@@ -465,9 +384,9 @@ pub fn compute_quaternions(
 
         if verbose {
             write!(log_file, "DATA: mag_data, 3, 1\n")
-                .expect("IOError: Error writing to log file.");
+                .expect("Ahrs: Error writing to log file.");
             write!(log_file, "{} {} {}\n", mx, my, mz)
-                .expect("IOError: Error writing to log file.");
+                .expect("Ahrs: Error writing to log file.");
         }
 
         // Sensors x (y)-axis of the accelerometer/gyro is aligned with the y (x)-axis of the magnetometer;
@@ -477,19 +396,19 @@ pub fn compute_quaternions(
         last_update_time = current_update_time;
         if verbose {
             write!(log_file, "DATA: update_period, 1, 1\n")
-                .expect("IOError: Error writing to log file.");
+                .expect("Ahrs: Error writing to log file.");
             write!(log_file, "{}\n", delta_t)
-                .expect("IOError: Error writing to log file.");
+                .expect("Ahrs: Error writing to log file.");
         }
 
         madgwick_quaternion_update(&[ax, ay, az], &[gx*std::f64::consts::PI/180.0, gy*std::f64::consts::PI/180.0, gz*std::f64::consts::PI/180.0], &[my, mx, -mz], &mut q, delta_t)
-            .expect("IOError: Error in quaternion update.");
+            .expect("Ahrs: Error in quaternion update.");
 
         if verbose {
             write!(log_file, "DATA: quat, 4, 1\n")
-                .expect("IOError: Error writing to log file.");
+                .expect("Ahrs: Error writing to log file.");
             write!(log_file, "{} {} {} {}\n", q[0], q[1], q[2], q[3])
-                .expect("IOError: Error writing to log file.");
+                .expect("Ahrs: Error writing to log file.");
         }
 
         // TODO - Refactor this to a pub fn get_message() which gets an Option<Message>
@@ -504,6 +423,14 @@ pub fn compute_quaternions(
 
             let message_response = match unwrapped_message.address {
                 0x00 => get_encoded_quaternion(q),
+                0x01 => {
+                    // Aquire mutex for access to the I2C hardware
+                    let mut i2c = i2c.lock().unwrap();
+                    // During field recalibration, perform magnetometer correction (mag_cal = true)
+                    *calibration = initialize_ahrs(&mut i2c, log_file, true);
+                    q = [1.0, 0.0, 0.0, 0.0];
+                    vec![0x0B, 0x00]
+                }
                 _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
             };
 
@@ -554,6 +481,8 @@ pub fn compute_quaternions(
 
 
 
+
+// TODO - refactor these functions somehow
 fn get_a_res(a_scale: &Ascale) -> f64 {
     // Possible accelerometer scales (and their register bit settings) are:
     // 2Gs (00), 4 Gs (01), 8 Gs (10), and 16 Gs (11).
@@ -587,6 +516,10 @@ fn get_m_res(m_scale: &Mscale) -> f64 {
     }
 }
 
+///////////////////////
+// Data transmission //
+///////////////////////
+
 fn get_encoded_quaternion(quaternion: [f64; 4]) -> Vec<u8> {
     let mut encoded_quaternion = Vec::new();
     for _i in 0..4 {
@@ -596,38 +529,159 @@ fn get_encoded_quaternion(quaternion: [f64; 4]) -> Vec<u8> {
     encoded_quaternion
 }
 
+
+/// Function to read 6 bytes of data from the magnetometer and store the result in a 3-element array
+fn read_mag_data(i2c: &I2c, raw_mag_data: &mut [i16; 3]) {
+    let mut raw_data: [u8; 7] = [0; 7];
+    i2c.block_read(AK8963_ST1 as u8, &mut raw_data[0..1])
+        .expect("Ahrs: I2C read error.");
+    if raw_data[0] & 0x01 == 0x01 {
+        i2c.block_read(AK8963_XOUT_L as u8, &mut raw_data)
+            .expect("Ahrs: I2C read error.");
+        if !(raw_data[6] & 0x08 == 0x08) { // check if magnetic sensor overflow is set, if not then report data
+            raw_mag_data[0] = (raw_data[1] as i16) << 8 | raw_data[0] as i16; // turn the MSB and LSB into a signed 16-bit value
+            raw_mag_data[1] = (raw_data[3] as i16) << 8 | raw_data[2] as i16; // data stored as little Endian
+            raw_mag_data[2] = (raw_data[5] as i16) << 8 | raw_data[4] as i16;
+        }
+    }
+
+    ()
+}
+
+
+/// Function to read 14 byes of data from the MPU
+fn read_mpu_data(i2c: &I2c, raw_mpu_data: &mut [i16; 7]) {
+    let mut raw_data: [u8; 14] = [0; 14];
+
+    i2c.block_read(ACCEL_XOUT_H as u8, &mut raw_data)
+        .expect("Ahrs: I2C read error.");
+    raw_mpu_data[0] = (raw_data[0] as i16) << 8 | raw_data[1] as i16; // turn the MSB and LSB into a signed 16-bit value
+    raw_mpu_data[1] = (raw_data[2] as i16) << 8 | raw_data[3] as i16;
+    raw_mpu_data[2] = (raw_data[4] as i16) << 8 | raw_data[5] as i16;
+    raw_mpu_data[3] = (raw_data[6] as i16) << 8 | raw_data[7] as i16;
+    raw_mpu_data[4] = (raw_data[8] as i16) << 8 | raw_data[9] as i16;
+    raw_mpu_data[5] = (raw_data[10] as i16) << 8 | raw_data[11] as i16;
+    raw_mpu_data[6] = (raw_data[12] as i16) << 8 | raw_data[13] as i16;
+
+    ()
+}
+
+
+////////////////////////////////////
+// Calibration and initialization //
+////////////////////////////////////
+
+
+/// Function which initializes the whole AHRS system; returns a calibration struct
+fn initialize_ahrs(i2c: &mut I2c, log_file: &mut File, mag_cal: bool) -> Mpu9250Calibration {
+    // Set sensor resolution
+    // TODO - these should be adjustable during operation
+    let a_scale: Ascale = Ascale::Afs2g;
+    let g_scale: Gscale = Gscale::Gfs250dps;
+    let m_scale: Mscale = Mscale::Mfs16bits; // Choose either 14-bit or 16-bit magnetometer resolution
+
+    // Specify magnetometer full scale
+    let m_mode: u8 = 0x02; // 2 for 8 Hz, 6 for 100 Hz continuous magnetometer data read
+
+    let mut reg = [0u8; 1];
+    let mag_calibration: [f64; 3]; // factory magnetometer calibration
+    let mag_bias: [f64; 3]; // measured magnetometer bias correction
+    let mag_scale: [f64; 3]; // measured magnetometer scale correction
+
+    // Set the address of the MPU-9250
+    i2c.set_slave_address(crate::ADDR_MPU9265)
+        .expect("Ahrs: Unable to set I2C address.");
+
+    // Read the WHO_AM_I register and check the result
+    i2c.block_read(WHO_AM_I_MPU9250 as u8, &mut reg)
+        .expect("Ahrs: I2C read error.");
+    assert_eq!(reg[0], 0x71);
+    println!("Successfully connected to MPU-9250!");
+
+    // Calibrate gyro and accelerometers, load biases in bias registers
+    calibrate_mpu9250(&i2c, log_file);
+
+    // Initialize the MPU9050
+    // TODO - the ownership of a_scale and g_scale could go to this function instead
+    init_mpu9250(&i2c, &a_scale, &g_scale);
+
+    // Set the address of the AK8963 magnetometer
+    i2c.set_slave_address(crate::ADDR_AK8963)
+        .expect("Ahrs: Unable to set I2C address.");
+
+    // Read the WHO_AM_I register and check the result
+    i2c.block_read(AK8963_WHO_AM_I as u8, &mut reg)
+        .expect("Ahrs: I2C read error.");
+    assert_eq!(reg[0], 0x48);
+    println!("Successfully connected to AK8963!");
+
+    // TODO - the ownership of m_scale could go to this function instead
+    mag_calibration = init_ak8963(&i2c, &m_scale, m_mode);
+    write!(log_file, "DEBUG: Magnetometer factory calibration: {:?}\n", mag_calibration)
+        .expect("Error writing to log file.");
+
+    if mag_cal {
+        (mag_bias, mag_scale) = calibrate_ak8963(&i2c, &mag_calibration, log_file);
+        write!(log_file, "DEBUG: Magnetometer bias correction: {:?}\n", mag_bias)
+           .expect("Error writing to log file.");
+        write!(log_file, "DEBUG: Magnetometer scale correction: {:?}\n", mag_scale)
+           .expect("Error writing to log file.");
+    } else {
+        // use previously calculated calibration values
+        mag_bias = [-85.5859375, 286.69921875, 39.05859375];
+        mag_scale = [1.003875968992248, 0.9961538461538462, 1.0];
+    }
+
+    // Create configuration structure from initialization data
+    // TODO - this should be stored as a property of the AHRS struct; it can be updated
+    //  as necessary (e.g. magnetometer recalibration)
+    Mpu9250Calibration {
+        a_res: get_a_res(&a_scale),
+        g_res: get_g_res(&g_scale),
+        m_res: get_m_res(&m_scale),
+        mag_calibration: mag_calibration,
+        mag_bias: mag_bias,
+        mag_scale: mag_scale,
+    }
+}
+
 /// Funciton which initializes the AK8963
-fn init_ak8963(i2c: &I2c, m_scale: &Mscale, m_mode: u8) -> Result<([f64; 3]), Box<dyn Error>> {
+fn init_ak8963(i2c: &I2c, m_scale: &Mscale, m_mode: u8) -> [f64; 3] {
     let mut mag_calibration: [f64; 3] = [0.0; 3];
     let mut raw_data: [u8; 3] = [0; 3];
 
     // frist extract the factory calibration for each magnetometer axis
-    i2c.block_write(AK8963_CNTL as u8, &[0x00])?; // power down magnetometer
+    i2c.block_write(AK8963_CNTL as u8, &[0x00]) // power down magnetometer
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(30));
-    i2c.block_write(AK8963_CNTL as u8, &[0x00])?; // enter fuse ROM access mode
+    i2c.block_write(AK8963_CNTL as u8, &[0x00]) // enter fuse ROM access mode
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(30));
 
-    i2c.block_read(AK8963_ASAX as u8, &mut raw_data)?; // read the x-, y-, and z-axis calibration values
+    i2c.block_read(AK8963_ASAX as u8, &mut raw_data) // read the x-, y-, and z-axis calibration values
+        .expect("Ahrs: I2C read error.");
     mag_calibration[0] = (raw_data[0] as f64 - 128.0)/256.0 + 1.0; // return x-axis sensitivity adjustment values, etc.
     mag_calibration[1] = (raw_data[1] as f64 - 128.0)/256.0 + 1.0;
     mag_calibration[2] = (raw_data[2] as f64 - 128.0)/256.0 + 1.0;
 
-    i2c.block_write(AK8963_CNTL as u8, &[0x00])?; // power down magnetometer
+    i2c.block_write(AK8963_CNTL as u8, &[0x00]) // power down magnetometer
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(30));
 
     // configure the magnetometer for continuous read and highest resolution
     // set Mscale bit 4 to 1 (0) to enable 16 (14) bit resolution in CNTL register,
     // and enable continuous mode data acquisition Mmode (bits [3:0]), 0010 for 8Hz and 0110 for 100Hz sample rates
     raw_data[0] = (*m_scale as u8) << 4 | m_mode;
-    i2c.block_write(AK8963_CNTL as u8, &mut raw_data[0..1])?; // power down magnetometer
+    i2c.block_write(AK8963_CNTL as u8, &mut raw_data[0..1]) // power down magnetometer
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(30));
 
-    Ok(mag_calibration)
+    mag_calibration
 }
 
 
 /// Funciton which accumulates magnetometer data and calculates bias and scale corrections
-fn calibrate_ak8963(i2c: &I2c, mag_calibration: &[f64; 3], log_file: &mut File) -> Result<([f64; 3], [f64;3]), Box<dyn Error>> {
+fn calibrate_ak8963(i2c: &I2c, mag_calibration: &[f64; 3], log_file: &mut File) -> ([f64; 3], [f64;3]) {
     let mut raw_mag_bias: [i32; 3] = [0; 3];
     let mut raw_mag_scale: [i32; 3] = [0; 3];
     let mut mag_bias: [f64; 3] = [0.0; 3];
@@ -646,7 +700,7 @@ fn calibrate_ak8963(i2c: &I2c, mag_calibration: &[f64; 3], log_file: &mut File) 
     write!(log_file, "DATA: mag_cal, 3, {}\n", sample_count)
         .expect("Error writing to log file.");
     for _i in 0..sample_count {
-        read_mag_data(&i2c, &mut raw_mag_data)?;
+        read_mag_data(&i2c, &mut raw_mag_data);
         for j in 0..3 {
             if raw_mag_data[j] > mag_max[j] {mag_max[j] = raw_mag_data[j];}
             if raw_mag_data[j] < mag_min[j] {mag_min[j] = raw_mag_data[j];}
@@ -679,52 +733,20 @@ fn calibrate_ak8963(i2c: &I2c, mag_calibration: &[f64; 3], log_file: &mut File) 
 
     println!("Magnetometer calibration done!");
 
-    Ok((mag_bias, mag_scale))
-}
-
-
-/// Function to read 6 bytes of data from the magnetometer and store the result in a 3-element array
-fn read_mag_data(i2c: &I2c, raw_mag_data: &mut [i16; 3]) -> Result<(), Box<dyn Error>> {
-    let mut raw_data: [u8; 7] = [0; 7];
-    i2c.block_read(AK8963_ST1 as u8, &mut raw_data[0..1])?;
-    if raw_data[0] & 0x01 == 0x01 {
-        i2c.block_read(AK8963_XOUT_L as u8, &mut raw_data)?;
-        if !(raw_data[6] & 0x08 == 0x08) { // check if magnetic sensor overflow is set, if not then report data
-            raw_mag_data[0] = (raw_data[1] as i16) << 8 | raw_data[0] as i16; // turn the MSB and LSB into a signed 16-bit value
-            raw_mag_data[1] = (raw_data[3] as i16) << 8 | raw_data[2] as i16; // data stored as little Endian
-            raw_mag_data[2] = (raw_data[5] as i16) << 8 | raw_data[4] as i16;
-        }
-    }
-
-    Ok(())
-}
-
-
-/// Function to read 14 byes of data from the MPU
-fn read_mpu_data(i2c: &I2c, raw_mpu_data: &mut [i16; 7]) -> Result<(), Box<dyn Error>> {
-    let mut raw_data: [u8; 14] = [0; 14];
-
-    i2c.block_read(ACCEL_XOUT_H as u8, &mut raw_data)?;
-    raw_mpu_data[0] = (raw_data[0] as i16) << 8 | raw_data[1] as i16; // turn the MSB and LSB into a signed 16-bit value
-    raw_mpu_data[1] = (raw_data[2] as i16) << 8 | raw_data[3] as i16;
-    raw_mpu_data[2] = (raw_data[4] as i16) << 8 | raw_data[5] as i16;
-    raw_mpu_data[3] = (raw_data[6] as i16) << 8 | raw_data[7] as i16;
-    raw_mpu_data[4] = (raw_data[8] as i16) << 8 | raw_data[9] as i16;
-    raw_mpu_data[5] = (raw_data[10] as i16) << 8 | raw_data[11] as i16;
-    raw_mpu_data[6] = (raw_data[12] as i16) << 8 | raw_data[13] as i16;
-
-    Ok(())
+    (mag_bias, mag_scale)
 }
 
 
 /// Funciton which initializes the MPU9250
-fn init_mpu9250(i2c: &I2c, a_scale: &Ascale, g_scale: &Gscale) -> Result<(), Box<dyn Error>> {
+fn init_mpu9250(i2c: &I2c, a_scale: &Ascale, g_scale: &Gscale) {
     // wake up device
-    i2c.block_write(PWR_MGMT_1 as u8, &[0x00])?; // clear sleep mode bit (6), enable all sensors
+    i2c.block_write(PWR_MGMT_1 as u8, &[0x00]) // clear sleep mode bit (6), enable all sensors
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(100)); // wait for all registers to reset
 
     // get stable time source
-    i2c.block_write(PWR_MGMT_1 as u8, &[0x01])?; // auto select clock source to be PLL gyroscope reference if ready
+    i2c.block_write(PWR_MGMT_1 as u8, &[0x01]) // auto select clock source to be PLL gyroscope reference if ready
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(200));
 
     // configure gyro and thermometer
@@ -733,35 +755,43 @@ fn init_mpu9250(i2c: &I2c, a_scale: &Ascale, g_scale: &Gscale) -> Result<(), Box
     // be higher than 1 / 0.0059 = 170Hz
     // DLPF_CFG = bits 2:0 = 011; this lmits the sample rate to 1000Hz for both
     // with the MPU9250, it is possible to get gyro sample rates of 32kHz (!), 8kHz, or 1kHz
-    i2c.block_write(CONFIG as u8, &[0x03])?;
+    i2c.block_write(CONFIG as u8, &[0x03])
+        .expect("Ahrs: I2C write error.");
 
     // set sample rate = gyroscope output rate/ (1 + SMPLRT_DIV)
     //i2c.block_write(SMPLRT_DIV as u8, &[0x04])?; // use a 200 Hz rate; a rate consistent with the fitler update rate
     //                                         // determined inset in CONFIG above
-    i2c.block_write(SMPLRT_DIV as u8, &[0x00])?;
+    i2c.block_write(SMPLRT_DIV as u8, &[0x00])
+        .expect("Ahrs: I2C write error.");
 
     // set gyroscope full scale range
     // range selects FS_SEL and GFS_SEL are 0 - 3, so 2-bit values are left-shifted into positions 4:3
     let mut raw_data: [u8; 1] = [0];
-    i2c.block_read(GYRO_CONFIG as u8, &mut raw_data)?; // get current GYRO_CONFIG register value
+    i2c.block_read(GYRO_CONFIG as u8, &mut raw_data) // get current GYRO_CONFIG register value
+        .expect("Ahrs: I2C read error.");
     raw_data[0] = raw_data[0] & !0x03; // clear Fchoice bits [1:0]
     raw_data[0] = raw_data[0] & !0x18; // clear GFS bits [4:3]
     raw_data[0] = raw_data[0] | (*g_scale as u8) << 3; // set full scale range for the gyro
-    i2c.block_write(GYRO_CONFIG as u8, &mut raw_data)?; // write new GYRO_CONFIG value to register
+    i2c.block_write(GYRO_CONFIG as u8, &mut raw_data) // write new GYRO_CONFIG value to register
+        .expect("Ahrs: I2C write error.");
 
     // set accelerometer full-scale range configuration
-    i2c.block_read(ACCEL_CONFIG as u8, &mut raw_data)?; // get current ACCEL_CONFIG register value
+    i2c.block_read(ACCEL_CONFIG as u8, &mut raw_data) // get current ACCEL_CONFIG register value
+        .expect("Ahrs: I2C read error.");
     raw_data[0] = raw_data[0] & !0x18; // clear AFS bits [4:3]
     raw_data[0] = raw_data[0] | (*a_scale as u8) << 3; // set full scale range for the accelerometer
-    i2c.block_write(ACCEL_CONFIG as u8, &mut raw_data)?; // write new ACCEL_CONFIG value to register
+    i2c.block_write(ACCEL_CONFIG as u8, &mut raw_data) // write new ACCEL_CONFIG value to register
+        .expect("Ahrs: I2C write error.");
 
     // set accelerometer sample rate configuration
     // it is possible to get a 4kHz sample rate from the accelerometer by choosing 1 for
     // accel_fchoice_b bit [3]; in this case the bandwidth is 1.13kHz
-    i2c.block_read(ACCEL_CONFIG2 as u8, &mut raw_data)?;
+    i2c.block_read(ACCEL_CONFIG2 as u8, &mut raw_data)
+        .expect("Ahrs: I2C read error.");
     raw_data[0] = raw_data[0] & !0x0F; // clear accel_fchoice_b (bit 3) and A_DLPFGFG (bits [2:0])
     raw_data[0] = raw_data[0] | 0x03; // set accelerometer rate to 1kHz and bandiwdth to 41Hz
-    i2c.block_write(ACCEL_CONFIG2 as u8, &mut raw_data)?; // write new ACCEL_CONFIG2 register value
+    i2c.block_write(ACCEL_CONFIG2 as u8, &mut raw_data) // write new ACCEL_CONFIG2 register value
+        .expect("Ahrs: I2C write error.");
 
     // the accelerometer, gyro, and thermometer are set to 1kHz sample rates,
     // but all these rates are further reduced by a factor of 5 to 200Hz because of the SMPLRT_DIV setting
@@ -770,17 +800,19 @@ fn init_mpu9250(i2c: &I2c, a_scale: &Ascale, g_scale: &Gscale) -> Result<(), Box
     // set interrupt pin active high, push-pull, hold interrupt pin level HIGH until interrupt cleared,
     // clear on read of INT_STATUS, and enable I2C_BYPASS_EN so additional chips
     // can join the I2C bus and all can be controlled by the RPi as master
-    i2c.block_write(INT_PIN_CFG as u8, &[0x32])?; // latch INT pin high and any read to clear; set bypass_en
-    i2c.block_write(INT_ENABLE as u8, &[0x01])?; // enable data ready (bit 0) interrupt
+    i2c.block_write(INT_PIN_CFG as u8, &[0x32]) // latch INT pin high and any read to clear; set bypass_en
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(INT_ENABLE as u8, &[0x01]) // enable data ready (bit 0) interrupt
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(100));
 
-    Ok(())
+    ()
 }
 
 
 /// Funciton which accumulates gyro and accelerometer data after device initialization. It calculates the average
 /// of the at-rest readings and then loads the resulting offsets into accelerometer and gyro bias registers.
-fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn Error>> {
+fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) {
     let mut raw_data: [u8; 12] = [0; 12];
     let mut gyro_bias: [i32; 3] = [0; 3];
     let mut accel_bias: [i32; 3] = [0; 3];
@@ -789,45 +821,62 @@ fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn Error
     let mut calibrated_scaled_gyro_bias: [f64; 3] = [0.0; 3];
     let mut calibrated_scaled_accel_bias: [f64; 3] = [0.0; 3];
 
-    i2c.block_write(PWR_MGMT_1 as u8, &[0x80])?; // Reset device
+    i2c.block_write(PWR_MGMT_1 as u8, &[0x80]) // Reset device
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(200)); // Delay a while to let the device stabilize
 
     // get stable time source; Auto select clock source to be PLL gyroscope reference if ready
     // else use the internal oscillator, bits 2:0 = 001
-    i2c.block_write(PWR_MGMT_1 as u8, &[0x01])?;
-    i2c.block_write(PWR_MGMT_2 as u8, &[0x00])?;
+    i2c.block_write(PWR_MGMT_1 as u8, &[0x01])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(PWR_MGMT_2 as u8, &[0x00])
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(200));
 
     // configure device for bias calculation
-    i2c.block_write(INT_ENABLE as u8, &[0x00])?; // disable all interrupts
-    i2c.block_write(FIFO_EN as u8, &[0x00])?; // diable FIFO
-    i2c.block_write(PWR_MGMT_1 as u8, &[0x00])?; // turn on internal clock source
-    i2c.block_write(I2C_MST_CTRL as u8, &[0x00])?; //disable I2C master
-    i2c.block_write(USER_CTRL as u8, &[0x00])?; // disable FIFO and I2C master modes
+    i2c.block_write(INT_ENABLE as u8, &[0x00]) // disable all interrupts
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(FIFO_EN as u8, &[0x00]) // diable FIFO
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(PWR_MGMT_1 as u8, &[0x00]) // turn on internal clock source
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(I2C_MST_CTRL as u8, &[0x00]) //disable I2C master
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(USER_CTRL as u8, &[0x00]) // disable FIFO and I2C master modes
+        .expect("Ahrs: I2C write error.");
     // NOTE - I don't think the register below should be 0x0C, I think it should be 0x40
-    i2c.block_write(USER_CTRL as u8, &[0x0C])?; // reset FIFO and DMP
+    i2c.block_write(USER_CTRL as u8, &[0x0C]) // reset FIFO and DMP
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(15));
 
     // configure MPU6050 gyro and accelerometer for bias calculation
     // NOTE - with the settings below, the gyro has a LPF at 184 Hz, and the temperature sensor has a LPF of 188Hz
-    i2c.block_write(CONFIG as u8, &[0x01])?; // set low-pass filter to 188Hz
+    i2c.block_write(CONFIG as u8, &[0x01]) // set low-pass filter to 188Hz
+        .expect("Ahrs: I2C write error.");
     // NOTE - the line below specifies no division of the internal sample rate of 1kHz
-    i2c.block_write(SMPLRT_DIV as u8, &[0x00])?; // set sample rate to 1kHz
-    i2c.block_write(GYRO_CONFIG as u8, &[0x00])?; // set gyro full-scale to 250 degrees per second, maximum sensitivity
-    i2c.block_write(ACCEL_CONFIG as u8, &[0x00])?; // set accelerometer full-scale to 2g, maximum sensitivity
+    i2c.block_write(SMPLRT_DIV as u8, &[0x00]) // set sample rate to 1kHz
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(GYRO_CONFIG as u8, &[0x00]) // set gyro full-scale to 250 degrees per second, maximum sensitivity
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(ACCEL_CONFIG as u8, &[0x00]) // set accelerometer full-scale to 2g, maximum sensitivity
+        .expect("Ahrs: I2C write error.");
 
     // NOTE - the values below can be read off the datasheet given the register settings above
     let gyrosensitivity: u16 = 131; // = 131 LSB/degrees/sec
     let accelsensitivity: u16 = 16384; // = 16384 LSB/g
 
     // configure FIFO to capture accelerometer and gyro data for bias calculation
-    i2c.block_write(USER_CTRL as u8, &[0x40])?; // enable FIFO
-    i2c.block_write(FIFO_EN as u8, &[0x78])?; // enable gyro and accelerometer sensors for FIFO (max size 512 bytes in MPU-9150)
+    i2c.block_write(USER_CTRL as u8, &[0x40]) // enable FIFO
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(FIFO_EN as u8, &[0x78]) // enable gyro and accelerometer sensors for FIFO (max size 512 bytes in MPU-9150)
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(40)); // accumulate 40 samples in 40 milliseconds = 480 bytes
 
     // at the end of the sample accumulation, turn off FIFO sensor read
-    i2c.block_write(FIFO_EN as u8, &[0x00])?; // disable gyro and accelerometer sensors for FIFO
-    i2c.block_read(FIFO_COUNTH as u8, &mut raw_data[0..2])?; // read FIFO sample count
+    i2c.block_write(FIFO_EN as u8, &[0x00]) // disable gyro and accelerometer sensors for FIFO
+        .expect("Ahrs: I2C write error.");
+    i2c.block_read(FIFO_COUNTH as u8, &mut raw_data[0..2]) // read FIFO sample count
+        .expect("Ahrs: I2C read error.");
     let fifo_count: u16 = (raw_data[0] as u16) << 8 | (raw_data[1] as u16);
     let packet_count: u16 = fifo_count/12; // how many sets of full gyro and accelerometer data for averaging
 
@@ -835,7 +884,8 @@ fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn Error
     let mut gyro_temp: [i16; 3] = [0; 3];
 
     for _i in 0..packet_count {
-        i2c.block_read(FIFO_R_W as u8, &mut raw_data)?; // read data for averaging
+        i2c.block_read(FIFO_R_W as u8, &mut raw_data) // read data for averaging
+            .expect("Ahrs: I2C read error.");
         accel_temp[0] = (raw_data[0] as i16) << 8 | raw_data[1] as i16; // form signed 16-bit integer for each sample if FIFO
         accel_temp[1] = (raw_data[2] as i16) << 8 | raw_data[3] as i16;
         accel_temp[2] = (raw_data[4] as i16) << 8 | raw_data[5] as i16;
@@ -870,12 +920,18 @@ fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn Error
     raw_data[5] = ((-gyro_bias[2]/4     ) & 0xFF) as u8;
 
     // push gyro biases to hardware registers
-    i2c.block_write(XG_OFFSET_H as u8, &mut raw_data[0..1])?;
-    i2c.block_write(XG_OFFSET_L as u8, &mut raw_data[1..2])?;
-    i2c.block_write(YG_OFFSET_H as u8, &mut raw_data[2..3])?;
-    i2c.block_write(YG_OFFSET_L as u8, &mut raw_data[3..4])?;
-    i2c.block_write(ZG_OFFSET_H as u8, &mut raw_data[4..5])?;
-    i2c.block_write(ZG_OFFSET_L as u8, &mut raw_data[5..6])?;
+    i2c.block_write(XG_OFFSET_H as u8, &mut raw_data[0..1])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(XG_OFFSET_L as u8, &mut raw_data[1..2])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(YG_OFFSET_H as u8, &mut raw_data[2..3])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(YG_OFFSET_L as u8, &mut raw_data[3..4])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(ZG_OFFSET_H as u8, &mut raw_data[4..5])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(ZG_OFFSET_L as u8, &mut raw_data[5..6])
+        .expect("Ahrs: I2C write error.");
 
     // output scaled gyro biases for display in the main program
     scaled_gyro_bias[0] = gyro_bias[0] as f64 / gyrosensitivity as f64;
@@ -891,9 +947,12 @@ fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn Error
     // compensation calculations. Accelerometer bias registers expect bias input as 2048 LSB per g, so that
     // the accelerometer biases calculated above must be divided by 8.
     let mut accel_bias_reg: [i32; 3] = [0; 3]; // sotre the factory acceleromeer trim biases
-    i2c.block_read(XA_OFFSET_H as u8, &mut raw_data[0..2])?; // read factory accelerometr trim values
-    i2c.block_read(YA_OFFSET_H as u8, &mut raw_data[2..4])?;
-    i2c.block_read(ZA_OFFSET_H as u8, &mut raw_data[4..6])?;
+    i2c.block_read(XA_OFFSET_H as u8, &mut raw_data[0..2]) // read factory accelerometr trim values
+        .expect("Ahrs: I2C read error.");
+    i2c.block_read(YA_OFFSET_H as u8, &mut raw_data[2..4])
+        .expect("Ahrs: I2C read error.");
+    i2c.block_read(ZA_OFFSET_H as u8, &mut raw_data[4..6])
+        .expect("Ahrs: I2C read error.");
 
     accel_bias_reg[0] = ((raw_data[0] as i16) << 8 | (raw_data[1] as i16)) as i32;
     accel_bias_reg[1] = ((raw_data[2] as i16) << 8 | (raw_data[3] as i16)) as i32;
@@ -925,12 +984,18 @@ fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn Error
     raw_data[5] = raw_data[5] & mask_bit[2];
 
     // push accelerometer biases to hardware registers
-    i2c.block_write(XA_OFFSET_H as u8, &mut raw_data[0..1])?;
-    i2c.block_write(XA_OFFSET_L as u8, &mut raw_data[1..2])?;
-    i2c.block_write(YA_OFFSET_H as u8, &mut raw_data[2..3])?;
-    i2c.block_write(YA_OFFSET_L as u8, &mut raw_data[3..4])?;
-    i2c.block_write(ZA_OFFSET_H as u8, &mut raw_data[4..5])?;
-    i2c.block_write(ZA_OFFSET_L as u8, &mut raw_data[5..6])?;
+    i2c.block_write(XA_OFFSET_H as u8, &mut raw_data[0..1])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(XA_OFFSET_L as u8, &mut raw_data[1..2])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(YA_OFFSET_H as u8, &mut raw_data[2..3])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(YA_OFFSET_L as u8, &mut raw_data[3..4])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(ZA_OFFSET_H as u8, &mut raw_data[4..5])
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(ZA_OFFSET_L as u8, &mut raw_data[5..6])
+        .expect("Ahrs: I2C write error.");
 
     // output scaled accelerometer biases for display in the main program
     scaled_accel_bias[0] = accel_bias[0] as f64 / accelsensitivity as f64;
@@ -942,35 +1007,49 @@ fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn Error
     // re-measure the biases
 
     // configure device for bias calculation
-    i2c.block_write(FIFO_EN as u8, &[0x00])?; // diable FIFO
-    i2c.block_write(PWR_MGMT_1 as u8, &[0x00])?; // turn on internal clock source
-    i2c.block_write(I2C_MST_CTRL as u8, &[0x00])?; //disable I2C master
-    i2c.block_write(USER_CTRL as u8, &[0x00])?; // disable FIFO and I2C master modes
+    i2c.block_write(FIFO_EN as u8, &[0x00]) // diable FIFO
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(PWR_MGMT_1 as u8, &[0x00]) // turn on internal clock source
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(I2C_MST_CTRL as u8, &[0x00]) //disable I2C master
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(USER_CTRL as u8, &[0x00]) // disable FIFO and I2C master modes
+        .expect("Ahrs: I2C write error.");
     // NOTE - I don't think the register below should be 0x0C, I think it should be 0x40
-    i2c.block_write(USER_CTRL as u8, &[0x0C])?; // reset FIFO and DMP
+    i2c.block_write(USER_CTRL as u8, &[0x0C]) // reset FIFO and DMP
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(15));
 
     // configure MPU6050 gyro and accelerometer for bias calculation
     // NOTE - with the settings below, the gyro has a LPF at 184 Hz, and the temperature sensor has a LPF of 188Hz
-    i2c.block_write(CONFIG as u8, &[0x01])?; // set low-pass filter to 188Hz
+    i2c.block_write(CONFIG as u8, &[0x01]) // set low-pass filter to 188Hz
+        .expect("Ahrs: I2C write error.");
     // NOTE - the line below specifies no division of the internal sample rate of 1kHz
-    i2c.block_write(SMPLRT_DIV as u8, &[0x00])?; // set sample rate to 1kHz
-    i2c.block_write(GYRO_CONFIG as u8, &[0x00])?; // set gyro full-scale to 250 degrees per second, maximum sensitivity
-    i2c.block_write(ACCEL_CONFIG as u8, &[0x00])?; // set accelerometer full-scale to 2g, maximum sensitivity
+    i2c.block_write(SMPLRT_DIV as u8, &[0x00]) // set sample rate to 1kHz
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(GYRO_CONFIG as u8, &[0x00]) // set gyro full-scale to 250 degrees per second, maximum sensitivity
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(ACCEL_CONFIG as u8, &[0x00]) // set accelerometer full-scale to 2g, maximum sensitivity
+        .expect("Ahrs: I2C write error.");
 
     // configure FIFO to capture accelerometer and gyro data for bias calculation
-    i2c.block_write(USER_CTRL as u8, &[0x40])?; // enable FIFO
-    i2c.block_write(FIFO_EN as u8, &[0x78])?; // enable gyro and accelerometer sensors for FIFO (max size 512 bytes in MPU-9150)
+    i2c.block_write(USER_CTRL as u8, &[0x40]) // enable FIFO
+        .expect("Ahrs: I2C write error.");
+    i2c.block_write(FIFO_EN as u8, &[0x78]) // enable gyro and accelerometer sensors for FIFO (max size 512 bytes in MPU-9150)
+        .expect("Ahrs: I2C write error.");
     thread::sleep(Duration::from_millis(40)); // accumulate 40 samples in 40 milliseconds = 480 bytes
 
     // at the end of the sample accumulation, turn off FIFO sensor read
-    i2c.block_write(FIFO_EN as u8, &[0x00])?; // disable gyro and accelerometer sensors for FIFO
-    i2c.block_read(FIFO_COUNTH as u8, &mut raw_data[0..2])?; // read FIFO sample count
+    i2c.block_write(FIFO_EN as u8, &[0x00]) // disable gyro and accelerometer sensors for FIFO
+        .expect("Ahrs: I2C write error.");
+    i2c.block_read(FIFO_COUNTH as u8, &mut raw_data[0..2]) // read FIFO sample count
+        .expect("Ahrs: I2C read error.");
     let fifo_count: u16 = (raw_data[0] as u16) << 8 | (raw_data[1] as u16);
     let packet_count: u16 = fifo_count/12; // how many sets of full gyro and accelerometer data for averaging
 
     for _i in 0..packet_count {
-        i2c.block_read(FIFO_R_W as u8, &mut raw_data)?; // read data for averaging
+        i2c.block_read(FIFO_R_W as u8, &mut raw_data) // read data for averaging
+            .expect("Ahrs: I2C read error.");
         accel_temp[0] = (raw_data[0] as i16) << 8 | raw_data[1] as i16; // form signed 16-bit integer for each sample if FIFO
         accel_temp[1] = (raw_data[2] as i16) << 8 | raw_data[3] as i16;
         accel_temp[2] = (raw_data[4] as i16) << 8 | raw_data[5] as i16;
@@ -1011,7 +1090,7 @@ fn calibrate_mpu9250(i2c: &I2c, log_file: &mut File) -> Result<(), Box<dyn Error
     
     ///////////////
 
-    Ok(())
+    ()
 }
 
 

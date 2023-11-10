@@ -42,8 +42,7 @@ fn main() {
     let i2c = Arc::new(Mutex::new(i2c));
 
     // Set up connection to AHRS
-    let gpu_ahrs = Ahrs::new(&time_string, verbose, Arc::clone(&i2c))
-        .expect("GPU Error: Error creating AHRS interface.");
+    let gpu_ahrs = Ahrs::new(&time_string, verbose, Arc::clone(&i2c));
     println!("Waiting on the AHRS to come up...");
     thread::sleep(Duration::from_millis(1000));
 
