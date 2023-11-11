@@ -149,11 +149,11 @@ pixels.show()
 # Begin main loop
 
 # Initialize ghosts
-num_ghosts = 1
 ghost_array = []
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 	s.connect((HOST, PORT))
+	s.settimeout(0.1)
 
 	# Get initial quaternion from the G.P.U.
 	s.sendall(b'\x01\x02\xDE\xAD')
@@ -306,12 +306,28 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 				print("Recalibrating orientation...")
 				if blue_2_counter > 25:
 					print("Doing full reinitialization...")
-					# s.sendall(b'\x03\x02\xDE\xAD')
-					# output_data = s.recv(64)
-					# dt = np.dtype(float)
-					# dt = dt.newbyteorder('>')
-					# quat = np.frombuffer(data, dtype=dt, count=4)
-					# Need to instruct user to return detector to neutral position
+					s.sendall(b'\x03\x02\xDE\xAD')
+					currently_calibrating = True
+					calibration_counter = 0
+					while currently_calibrating:
+						try:
+							response_data = s.recv(2)
+							print("Reinitialization response = ", response_data)
+							currently_calibrating = False
+						except socket.timeout:
+							print("Calibration not done yet")
+						finally:
+							calibration_counter += 1
+
+						if calibration_counter > 20: # Hold still for first 2 seconds
+							pixels.fill((0, 0, 0))
+							pixels[calibration_counter%25] = [0, 0, 255]
+							pixels.show()
+
+					# Return to neutral position
+					pixels.fill((0, 0, 255))
+					pixels.show()
+					time.sleep(3)
 
 				s.sendall(b'\x01\x02\xDE\xAD')
 				data = s.recv(64)
@@ -323,6 +339,9 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 				adjusted_quat_rot_matrix = np.matmul(sensor_adjustment_matrix, quat_rot_matrix)
 				orientation_matrix = LA.inv(adjusted_quat_rot_matrix)
 
+				pixels.fill((0, 0, 0))
+				pixels.show()
+				time.sleep(0.25)
 				for _ in range(2):
 					pixels.fill((0, 0, 255))
 					pixels.show()
