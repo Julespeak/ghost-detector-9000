@@ -60,20 +60,20 @@ impl EmfHost {
         }
     }
 
-    pub fn get_adc_voltage(&self) -> Vec<u8> {
-        // Prepare request for ADC voltage data
+    pub fn send_message(&self, address: u8, request: Vec<u8>) -> Vec<u8> {
+        // Prepare request message for EMF thread
         let message = crate::Message {
-            address: 0x00,
-            request: Vec::new(),
+            address: address,
+            request: request,
             response: Vec::new(),
         };
         // Send message to EMF thread
         // TODO - understand why these as_ref's are necessary
         self.sender.as_ref().unwrap()
-            .send(message).expect("Could not send data message to EMF thread.");
+            .send(message).expect("Emf: Could not send data message to worker.");
         // Get return message from EMF thread
         let return_message = self.receiver.as_ref().unwrap()
-            .recv().expect("No response from EMF thread.");
+            .recv().expect("Emf: No response from worker.");
         // Return encoded voltage data
         return_message.response
     }
@@ -95,27 +95,40 @@ pub fn read_emf_data(
 
     // TODO - there should be a way out of this loop when a close method is invoked
     loop {
-        // TODO - Refactor this to a pub fn get_message() which gets an Option<Message>
-        let message = match receiver.try_recv() {
-                Ok(ahrs_message) => Some(ahrs_message),
-                Err(_error) => None,
-        };
-
-        // TODO - replace with an "if let"
-        if message.is_some() {
-            let mut unwrapped_message = message.unwrap();
-
-            let message_response = match unwrapped_message.address {
-                0x00 => {
+        if let Ok(mut message) = receiver.try_recv() {
+            let message_response = match message.address {
+                0x00 => { // Read a single value and return
                     let mut i2c = i2c.lock().unwrap();
                     read_adc_voltage(&mut i2c).to_be_bytes().into_iter().collect()
                 },
+                0x01 => { // Keep reading values until a stop message is received; return all recorded data
+                    let mut i2c = i2c.lock().unwrap();
+                    println!("Beginning ADC acquisition");
+                    let begin_message = crate::Message {
+                        address: 0x00,
+                        request: Vec::new(),
+                        response: vec![0x00, 0x0A],
+                    };
+                    sender.send(begin_message)
+                        .expect("Emf: Could not send data back from worker.");
+                    // Loop while reading data; stop when a stop message is received
+                    let mut output_data: Vec<f64> = Vec::new();
+                    loop {
+                        if let Ok(stop_message) = receiver.try_recv() {
+                            if stop_message.address == 0x02 { break; }
+                        }
+                        output_data.push(read_adc_voltage(&mut i2c));
+                    }
+                    // Return acquired data
+                    println!("Returning measured data");
+                    encode_voltage_vector(output_data)
+                }
                 _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
             };
 
-            unwrapped_message.response = message_response;
+            message.response = message_response;
 
-            sender.send(unwrapped_message)
+            sender.send(message)
                 .expect("Could not send data from EMF host.");
         }
         // adc_reads = adc_reads + 1;
@@ -172,6 +185,15 @@ fn configure_ads1115(i2c: &I2c, log_file: &mut File) {
         .expect("Error writing to log file.");
 
     ()
+}
+
+fn encode_voltage_vector(voltages: Vec<f64>) -> Vec<u8> {
+    let mut encoded_voltages = Vec::new();
+    for voltage in voltages {
+        // https://stackoverflow.com/questions/54142528/how-can-i-concatenate-two-slices-or-two-vectors-and-still-have-access-to-the-ori
+        encoded_voltages = encoded_voltages.to_vec().into_iter().chain(voltage.to_be_bytes()).collect();
+    }
+    encoded_voltages
 }
 
 /// Function which reads ADC data from the ADS1115

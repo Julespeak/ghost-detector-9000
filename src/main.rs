@@ -73,14 +73,16 @@ fn main() {
 
             let message_response = match unwrapped_message.address {
                 0x00 => "RUST_GPU_V0.0".as_bytes().to_vec(),
-                0x01 => gpu_ahrs.send_message(0x00, Vec::new()),
-                0x02 => gpu_emf.get_adc_voltage(),
-                0x03 => gpu_ahrs.send_message(0x01, Vec::new()),
+                0x01 => gpu_ahrs.send_message(0x00, Vec::new()), // Get the latest quaternion
+                0x02 => gpu_emf.send_message(0x00, Vec::new()), // Acquire single-shot of ADC data
+                0x03 => gpu_ahrs.send_message(0x01, Vec::new()), // Do field recalibration
+                0x04 => gpu_emf.send_message(0x01, Vec::new()), // Begin long acquisition of ADC data
+                0x05 => gpu_emf.send_message(0x02, Vec::new()), // End long acquisition of ADC data
                 _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
             };
 
-            println!("GPU - Got a message with address: {}", unwrapped_message.address);
-            println!("GPU - Going to respond with: {:?}", message_response);
+            // println!("GPU - Got a message with address: {}", unwrapped_message.address);
+            // println!("GPU - Going to respond with: {:?}", message_response);
 
             unwrapped_message.response = message_response;
 
