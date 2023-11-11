@@ -20,7 +20,7 @@ sensor_adjustment_matrix = np.array(
 ###########
 # Functions
 
-# version i trust a little more from here: http://www.songho.ca/opengl/gl_quaternion.html
+# Taken from here: http://www.songho.ca/opengl/gl_quaternion.html
 def quaternion_rotation_matrix(Q):
 	# Extract the values from Q
 	q0 = Q[0]
@@ -150,7 +150,6 @@ pixels.show()
 
 # Initialize ghosts
 num_ghosts = 1
-# ghost_array = populate_ghost_array(num_ghosts)
 ghost_array = []
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -170,7 +169,9 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 
 	frame_counter = 0
 	click_counter = 0
+	blue_2_counter = 0
 	ghost_scan = False
+	field_reorientation = False
 	while True:
 		pixels.fill((0, 0, 0))
 
@@ -279,7 +280,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 					pixels.fill((0, 0, 0))
 					pixels.show()
 				elif test_value > 33:
-					# pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/scan_pass.wav'), maxtime=1505)
+					pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/bad_signal.wav'), maxtime=1505)
 					pixels.fill((255, 255, 0))
 					pixels.show()
 					time.sleep(1.2)
@@ -296,27 +297,42 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 					time.sleep(0.3)
 			ghost_scan = False
 
-		# Field reorientation
+		# Field reorientation and reinitialization
 		if GPIO.input(button_dict["blue_2"]) == GPIO.HIGH:
-			print("Recalibrating orientation")
+			blue_2_counter += 1
+			field_reorientation = True
+		else:
+			if field_reorientation:
+				print("Recalibrating orientation...")
+				if blue_2_counter > 25:
+					print("Doing full reinitialization...")
+					# s.sendall(b'\x03\x02\xDE\xAD')
+					# output_data = s.recv(64)
+					# dt = np.dtype(float)
+					# dt = dt.newbyteorder('>')
+					# quat = np.frombuffer(data, dtype=dt, count=4)
+					# Need to instruct user to return detector to neutral position
 
-			pixels.fill((0, 0, 255))
-			pixels.show()
-			time.sleep(0.5)
+				s.sendall(b'\x01\x02\xDE\xAD')
+				data = s.recv(64)
+				dt = np.dtype(float)
+				dt = dt.newbyteorder('>')
+				quat = np.frombuffer(data, dtype=dt, count=4)
 
-			s.sendall(b'\x01\x02\xDE\xAD')
-			data = s.recv(64)
-			dt = np.dtype(float)
-			dt = dt.newbyteorder('>')
-			quat = np.frombuffer(data, dtype=dt, count=4)
+				quat_rot_matrix = quaternion_rotation_matrix(quat)
+				adjusted_quat_rot_matrix = np.matmul(sensor_adjustment_matrix, quat_rot_matrix)
+				orientation_matrix = LA.inv(adjusted_quat_rot_matrix)
 
-			quat_rot_matrix = quaternion_rotation_matrix(quat)
-			adjusted_quat_rot_matrix = np.matmul(sensor_adjustment_matrix, quat_rot_matrix)
-			orientation_matrix = LA.inv(adjusted_quat_rot_matrix)
-
-			time.sleep(0.5)
-			pixels.fill((0, 0, 0))
-			pixels.show()
+				for _ in range(2):
+					pixels.fill((0, 0, 255))
+					pixels.show()
+					time.sleep(0.25)
+					pixels.fill((0, 0, 0))
+					pixels.show()
+					time.sleep(0.25)
+			
+			field_reorientation = False
+			blue_2_counter = 0
 
 		# Reset ghost array
 		if GPIO.input(button_dict["knob"]) == GPIO.HIGH:
@@ -355,6 +371,14 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 					output_pixel[0] += 255
 				if (frame_counter + 5 - i)%5 == 0:
 					output_pixel[2] += 255
+				pixels[i] = output_pixel
+
+		if field_reorientation:
+			for i in range(25):
+				if i < blue_2_counter:
+					output_pixel = [0, 0, 255]
+				else:
+					output_pixel = [0, 0, 0]
 				pixels[i] = output_pixel
 
 
