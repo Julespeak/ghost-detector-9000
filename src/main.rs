@@ -73,8 +73,9 @@ fn main() {
 
             let message_response = match unwrapped_message.address {
                 0x00 => "RUST_GPU_V0.0".as_bytes().to_vec(),
-                0x01 => gpu_ahrs.get_latest_quaternion(),
+                0x01 => gpu_ahrs.send_message(0x00, Vec::new()),
                 0x02 => gpu_emf.get_adc_voltage(),
+                0x03 => gpu_ahrs.send_message(0x01, Vec::new()),
                 _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
             };
 

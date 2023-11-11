@@ -245,11 +245,11 @@ impl Ahrs {
         }
     }
 
-    pub fn get_latest_quaternion(&self) -> Vec<u8> {
-        // Prepare request for new quaternion
+    pub fn send_message(&self, address: u8, request: Vec<u8>) -> Vec<u8> {
+        // Prepare request message for AHRS thread
         let message = crate::Message {
-            address: 0x00,
-            request: Vec::new(),
+            address: address,
+            request: request,
             response: Vec::new(),
         };
         // Send message to AHRS thread
@@ -259,7 +259,7 @@ impl Ahrs {
         // Get return message from AHRS thread
         let return_message = self.receiver.as_ref().unwrap()
             .recv().expect("No response from AHRS thread.");
-        // Return encoded quaternion
+        // Return response from AHRS thread
         return_message.response
     }
 }
