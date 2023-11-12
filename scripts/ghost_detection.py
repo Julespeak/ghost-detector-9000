@@ -6,10 +6,11 @@ import numpy as np
 import math
 import time
 import wave
+import os
 from numpy import linalg as LA
 import pygame
 
-HOST = "ip_address"  # Ghost detector IP address
+HOST = os.environ['GPU_ADDRESS']  # Ghost detector IP address
 PORT = 9005  # SocketHost listening port
 
 sensor_adjustment_matrix = np.array(

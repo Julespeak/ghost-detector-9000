@@ -1,4 +1,5 @@
 use std::{
+    env,
     fs::File,
     io::{prelude::*, Write},
     net::TcpListener,
@@ -72,7 +73,7 @@ pub fn socket_worker(
     ) {
     let start = Instant::now();
 
-    let listener = TcpListener::bind("ip_address:9005").unwrap();
+    let listener = TcpListener::bind(format!("{}:9005", env::var("GPU_ADDRESS").unwrap())).unwrap();
     let mut shutdown: bool = false;
 
     for stream in listener.incoming() {
