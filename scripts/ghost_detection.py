@@ -246,14 +246,14 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 		# Trigger action
 		if GPIO.input(button_dict["trigger"]) == GPIO.HIGH:
 			if len(detected_ghosts)>0 and detected_ghosts[0]["located"]:
-				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/ghost_capture.wav'), maxtime=1000)
+				pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/ghost_capture.wav'), maxtime=1000)
 				ghost_array.pop(0) # Bit of a hack; we're always detecting the 0th ghost
 				print("Ghost captured!")
 				click_counter = 0
 				pixels.fill((255, 0, 0))
 				pixels.show()
 				time.sleep(1.5)
-				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/capture_success.wav'), maxtime=1500)
+				pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/capture_success.wav'), maxtime=1500)
 				time.sleep(1.5)
 				pixels.fill((0, 0, 0))
 				pixels.show()
@@ -309,7 +309,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 				recorded_data = (voltage_array - np.average(voltage_array)) * gain
 				audio = np.array([recorded_data, recorded_data]).T
 				audio = (audio * (2 ** 15 -1)).astype("<h")
-				with wave.open('/home/ghost/audio/recorded_data.wav', 'w') as f:
+				with wave.open('audio/recorded_data.wav', 'w') as f:
 					# 2 Channels
 					f.setnchannels(2)
 					# 2 bytes per sample
@@ -318,7 +318,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 					f.writeframes(audio.tobytes())
 
 				audio_duration = len(recorded_data)/samplerate
-				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/recorded_data.wav'), maxtime=int(audio_duration*1000))
+				pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/recorded_data.wav'), maxtime=int(audio_duration*1000))
 				time.sleep(audio_duration)
 
 				# Use recorded data to seed the RNG
@@ -329,7 +329,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 
 				if test_value > 67:
 					ghost_array = add_ghost_to_array(ghost_array)
-					pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/ghost_in_area_2.wav'), maxtime=3736)
+					pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/ghost_in_area_2.wav'), maxtime=3736)
 					pixels.fill((0, 0, 0))
 					pixels.show()
 					time.sleep(0.05)
@@ -343,7 +343,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 					pixels.fill((0, 0, 0))
 					pixels.show()
 				elif test_value > 33:
-					pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/bad_signal.wav'), maxtime=1505)
+					pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/bad_signal.wav'), maxtime=1505)
 					pixels.fill((255, 255, 0))
 					pixels.show()
 					time.sleep(1.2)
@@ -351,7 +351,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 					pixels.show()
 					time.sleep(0.3)
 				else:
-					pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/scan_pass.wav'), maxtime=1505)
+					pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/scan_pass.wav'), maxtime=1505)
 					pixels.fill((255, 0, 0))
 					pixels.show()
 					time.sleep(1.2)
@@ -441,22 +441,22 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 		# Get ghost count
 		if GPIO.input(button_dict["blue_1"]) == GPIO.HIGH:
 			if len(ghost_array) == 5:
-				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/five.wav'), maxtime=372)
+				pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/five.wav'), maxtime=372)
 				time.sleep(0.372)
 			elif len(ghost_array) == 4:
-				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/four.wav'), maxtime=409)
+				pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/four.wav'), maxtime=409)
 				time.sleep(0.409)
 			elif len(ghost_array) == 3:
-				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/three.wav'), maxtime=398)
+				pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/three.wav'), maxtime=398)
 				time.sleep(0.398)
 			elif len(ghost_array) == 2:
-				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/two.wav'), maxtime=325)
+				pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/two.wav'), maxtime=325)
 				time.sleep(0.325)
 			elif len(ghost_array) == 1:
-				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/one.wav'), maxtime=381)
+				pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/one.wav'), maxtime=381)
 				time.sleep(0.381)
 			else:
-				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/zero.wav'), maxtime=567)
+				pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/zero.wav'), maxtime=567)
 				time.sleep(0.567)
 
 
@@ -492,7 +492,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 		# Audio events
 
 		if click_counter > 30:
-			pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/ping_short.wav'), maxtime=334)
+			pygame.mixer.Channel(0).play(pygame.mixer.Sound('audio/ping_short.wav'), maxtime=334)
 			click_counter = 0
 
 		# Audio feedback events
