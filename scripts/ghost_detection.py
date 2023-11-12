@@ -170,9 +170,11 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 
 	frame_counter = 0
 	click_counter = 0
+	knob_counter = 0
 	blue_2_counter = 0
 	ghost_scan = False
 	field_reorientation = False
+	ghost_reset = False
 	while True:
 		pixels.fill((0, 0, 0))
 
@@ -416,11 +418,24 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 			field_reorientation = False
 			blue_2_counter = 0
 
-		# Reset ghost array
+		# Ghost reset and shutdown
 		if GPIO.input(button_dict["knob"]) == GPIO.HIGH:
-			print("Clearing ghost array...")
-			ghost_array = []
-			time.sleep(1.0)
+			knob_counter += 1
+			ghost_reset = True
+		else:
+			if ghost_reset:
+				if knob_counter > 25:
+					print("Killin' it")
+					pixels.fill((0, 0, 0))
+					pixels.show()
+					s.sendall(b'\x06\x02\xDE\xAD')
+					exit()
+				else:
+					print("Clearing ghost array...")
+					ghost_array = []
+					time.sleep(1.0)
+			ghost_reset = False
+			knob_counter = 0
 
 		# Get ghost count
 		if GPIO.input(button_dict["blue_1"]) == GPIO.HIGH:
@@ -462,6 +477,14 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 				else:
 					output_pixel = [0, 0, 0]
 				pixels[i] = output_pixel
+
+		if ghost_reset:
+			for i in range(25):
+				if i < knob_counter:
+					output_pixel = [0, 255, 0]
+				else:
+					output_pixel = [0, 0, 0]
+				pixels[24 - i] = output_pixel
 
 
 		##############
