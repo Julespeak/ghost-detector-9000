@@ -102,12 +102,11 @@ pub fn read_emf_data(
                     read_adc_voltage(&mut i2c).to_be_bytes().into_iter().collect()
                 },
                 0x01 => { // Keep reading values until a stop message is received; return all recorded data
-                    let mut i2c = i2c.lock().unwrap();
                     println!("Beginning ADC acquisition");
                     let begin_message = crate::Message {
                         address: 0x00,
                         request: Vec::new(),
-                        response: vec![0x00, 0x0A],
+                        response: vec![0x00, 0x01],
                     };
                     sender.send(begin_message)
                         .expect("Emf: Could not send data back from worker.");
@@ -117,7 +116,10 @@ pub fn read_emf_data(
                         if let Ok(stop_message) = receiver.try_recv() {
                             if stop_message.address == 0x02 { break; }
                         }
-                        output_data.push(read_adc_voltage(&mut i2c));
+                        {
+                            let mut i2c = i2c.lock().unwrap();
+                            output_data.push(read_adc_voltage(&mut i2c));
+                        }
                     }
                     // Return acquired data
                     println!("Returning measured data");
