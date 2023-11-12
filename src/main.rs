@@ -8,8 +8,8 @@ use std::{env, thread, time::Duration, sync::{Arc, Mutex}};
 use rppal::{system::DeviceInfo, i2c::I2c};
 use rust_gpu::{
     ahrs::AhrsHost,
-    sockethost::SocketHost,
-    emfhost::EmfHost,
+    socket::SocketHost,
+    emf::EmfHost,
 };
 
 fn main() {

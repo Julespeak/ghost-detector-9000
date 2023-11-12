@@ -1,6 +1,6 @@
 pub mod ahrs;
-pub mod sockethost;
-pub mod emfhost;
+pub mod socket;
+pub mod emf;
 
 // Addresses of the chips on the board that I have; determined with i2cdetect
 pub const ADDR_MPU9265: u16 = 0x68;
