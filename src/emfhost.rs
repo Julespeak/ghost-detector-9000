@@ -18,7 +18,7 @@ pub struct EmfHost {
 }
 
 impl EmfHost {
-    /// Create a new EmfHost interface.  The EMFHost spawns a thread which
+    /// Create a new EmfHost interface.  The EmfHost spawns a thread which
     ///  waits to receive data requests.  When a request is received, an ADC
     ///  signal is read at a fixed sample rate.  The resulting waveform is sent
     ///  back to the host process.
@@ -47,7 +47,7 @@ impl EmfHost {
         let (mosi_sender, mosi_receiver) = mpsc::channel();
         let (miso_sender, miso_receiver) = mpsc::channel();
 
-        let emfhost_thread = thread::spawn(move ||
+        let worker_thread = thread::spawn(move ||
             emf_worker(
                 i2c,
                 &mut log_file,
@@ -60,7 +60,7 @@ impl EmfHost {
         EmfHost {
             sender: Some(mosi_sender),
             receiver: Some(miso_receiver),
-            thread: Some(emfhost_thread),
+            thread: Some(worker_thread),
         }
     }
 

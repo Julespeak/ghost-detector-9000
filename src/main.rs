@@ -52,8 +52,7 @@ fn main() {
     thread::sleep(Duration::from_millis(1000));
 
     // Set up connection to SocketHost
-    let socket_host = SocketHost::new(&time_string)
-        .expect("GPU Error: Error creating SocketHost interface.");
+    let socket_host = SocketHost::new(&time_string);
 
     println!("Rust G.P.U. is alive; beginning main loop...");
 
@@ -61,17 +60,8 @@ fn main() {
 
     loop {
         // Check for new Messages from the SocketHost
-        // TODO - Refactor this to a pub fn get_message() which gets an Option<Message>
-        let message = match socket_host.receiver.as_ref().unwrap().try_recv() {
-                Ok(sockethost_message) => Some(sockethost_message),
-                Err(_error) => None,
-        };
-
-        // TODO - replace with an "if let"
-        if message.is_some() {
-            let mut unwrapped_message = message.unwrap();
-
-            let message_response = match unwrapped_message.address {
+        if let Ok(mut message) = socket_host.receiver.as_ref().unwrap().try_recv() {
+            let message_response = match message.address {
                 0x00 => "RUST_GPU_V0.0".as_bytes().to_vec(),
                 0x01 => gpu_ahrs.send_message(0x00, Vec::new()), // Get the latest quaternion
                 0x02 => gpu_emf.send_message(0x00, Vec::new()), // Acquire single-shot of ADC data
@@ -84,9 +74,9 @@ fn main() {
             // println!("GPU - Got a message with address: {}", unwrapped_message.address);
             // println!("GPU - Going to respond with: {:?}", message_response);
 
-            unwrapped_message.response = message_response;
+            message.response = message_response;
 
-            socket_host.sender.as_ref().unwrap().send(unwrapped_message)
+            socket_host.sender.as_ref().unwrap().send(message)
                 .expect("Could not send data from GPU.");
         }
 
