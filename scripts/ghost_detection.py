@@ -318,7 +318,12 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/recorded_data.wav'), maxtime=int(audio_duration*1000))
 				time.sleep(audio_duration)
 
+				# Use recorded data to seed the RNG
+				ghost_level = int( np.sum(recorded_data**2) * 1000)
+				print(ghost_level)
+				np.random.seed(ghost_level)
 				test_value = np.random.uniform(0.0, 100.)
+
 				if test_value > 67:
 					ghost_array = add_ghost_to_array(ghost_array)
 					pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/ghost_in_area_2.wav'), maxtime=3736)
