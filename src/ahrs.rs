@@ -189,7 +189,7 @@ pub struct Mpu9250Calibration {
 }
 
 // some things in this struct should be abstracted one layer deeper
-pub struct Ahrs {
+pub struct AhrsHost {
     // Sender sends data to the AHRS
     pub sender: Option<mpsc::Sender<crate::Message>>,
     // Receiver gets messages from the AHRS
@@ -198,8 +198,8 @@ pub struct Ahrs {
     thread: Option<thread::JoinHandle<()>>,
 }
 
-impl Ahrs {
-    /// Create a new AHRS interface.  The AHRS spawns a thread which endlessly
+impl AhrsHost {
+    /// Create a new AhrsHost interface.  The AhrsHost spawns a thread which endlessly
     ///  computes new quaternions using input from the MPU to feed a sensor
     ///  fustion algorithm.  After each quaternion update, the AHRS thread will
     ///  check to see if new data has been requested; if so, the AHRS thread
@@ -208,11 +208,11 @@ impl Ahrs {
     /// # More Documentation
     ///
     /// Would go here eventually...
-    pub fn new(time_string: &str, verbose: bool, i2c: Arc<Mutex<I2c>>) -> Ahrs {  
+    pub fn new(time_string: &str, verbose: bool, i2c: Arc<Mutex<I2c>>) -> AhrsHost {  
         // Set up connection to log file
         let log_file_name = format!("/home/ghost/rust-stuff/gpu_logs/{}_mpu_logfile.txt", time_string); 
         let mut log_file = File::create(log_file_name)
-            .expect("Unable to create MPU logfile.");
+            .expect("Ahrs: Unable to create logfile.");
 
         let mut calibration: Mpu9250Calibration;
 
@@ -227,8 +227,8 @@ impl Ahrs {
         let (mosi_sender, mosi_receiver) = mpsc::channel();
         let (miso_sender, miso_receiver) = mpsc::channel();
 
-        let quaternion_thread = thread::spawn(move ||
-            compute_quaternions(
+        let worker_thread = thread::spawn(move ||
+            ahrs_worker(
                 i2c,
                 &mut log_file,
                 verbose,
@@ -238,10 +238,10 @@ impl Ahrs {
             )
         );
 
-        Ahrs {
+        AhrsHost {
             sender: Some(mosi_sender),
             receiver: Some(miso_receiver),
-            thread: Some(quaternion_thread),
+            thread: Some(worker_thread),
         }
     }
 
@@ -255,17 +255,16 @@ impl Ahrs {
         // Send message to AHRS thread
         // TODO - understand why these as_ref's are necessary
         self.sender.as_ref().unwrap()
-            .send(message).expect("Could not send data message to AHRS thread.");
+            .send(message).expect("Ahrs: Could not send data message to worker.");
         // Get return message from AHRS thread
         let return_message = self.receiver.as_ref().unwrap()
-            .recv().expect("No response from AHRS thread.");
+            .recv().expect("Ahrs: No response from worker.");
         // Return response from AHRS thread
         return_message.response
     }
 }
 
-/// Compute quaternions forever
-pub fn compute_quaternions(
+pub fn ahrs_worker(
     i2c: Arc<Mutex<I2c>>,
     log_file: &mut File,
     verbose: bool,
@@ -301,22 +300,13 @@ pub fn compute_quaternions(
     let mut iterations: u32 = 0;
     let mut mpu_reads: u32 = 0;
 
-    const TOTAL_READS: u32 = 3000;
     let mut dummy_data: [u8; 1] = [0];
-    let mut mpu_sample_start: [u64; TOTAL_READS as usize] = [0; TOTAL_READS as usize];
-    let mut mpu_sample_stop: [u64; TOTAL_READS as usize] = [0; TOTAL_READS as usize];
-    let mut mag_sample_start: [u64; TOTAL_READS as usize] = [0; TOTAL_READS as usize];
-    let mut mag_sample_stop: [u64; TOTAL_READS as usize] = [0; TOTAL_READS as usize];
 
     // TODO - there should be a way out of this loop when a close method is invoked
     loop {
 
         // TODO - could probably get rid of this check and just assume that there is new data; check this against latest performance
         if interrupt_pin.is_high() { // If new data is available, read it in
-            if mpu_reads < TOTAL_READS-1 {
-                mpu_sample_start[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
-            }
-
             {
                 // Aquire mutex for access to the I2C hardware
                 let mut i2c = i2c.lock().unwrap();
@@ -325,12 +315,8 @@ pub fn compute_quaternions(
                     .expect("Unable to set I2C address.");
                 // Read data from MPU
                 read_mpu_data(&i2c, &mut raw_mpu_data);
+                mpu_reads = mpu_reads + 1;
             }
-
-            if mpu_reads < TOTAL_READS-1 {
-                mpu_sample_stop[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
-            }
-            mpu_reads = mpu_reads + 1;
 
             ax = (raw_mpu_data[0] as f64) * calibration.a_res;
             ay = (raw_mpu_data[1] as f64) * calibration.a_res;
@@ -362,17 +348,8 @@ pub fn compute_quaternions(
             i2c.block_read(AK8963_ST1 as u8, &mut dummy_data)
                 .expect("Ahrs: Error reading from magnetometer.");
 
-
-            if mpu_reads < TOTAL_READS-1 {
-               mag_sample_start[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
-            }
-
             // Read data from magnetometer
             read_mag_data(&i2c, &mut raw_mag_data);
-        }
-
-        if mpu_reads < TOTAL_READS-1 {
-            mag_sample_stop[mpu_reads as usize] = start.elapsed().as_nanos() as u64;
         }
 
         let mx: f64 = ((raw_mag_data[0] as f64) * calibration.mag_calibration[0] - calibration.mag_bias[0])
@@ -411,17 +388,8 @@ pub fn compute_quaternions(
                 .expect("Ahrs: Error writing to log file.");
         }
 
-        // TODO - Refactor this to a pub fn get_message() which gets an Option<Message>
-        let message = match receiver.try_recv() {
-                Ok(ahrs_message) => Some(ahrs_message),
-                Err(_error) => None,
-        };
-
-        // TODO - replace with an "if let"
-        if message.is_some() {
-            let mut unwrapped_message = message.unwrap();
-
-            let message_response = match unwrapped_message.address {
+        if let Ok(mut message) = receiver.try_recv() {
+            let message_response = match message.address {
                 0x00 => get_encoded_quaternion(q),
                 0x01 => {
                     // Aquire mutex for access to the I2C hardware
@@ -434,10 +402,10 @@ pub fn compute_quaternions(
                 _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
             };
 
-            unwrapped_message.response = message_response;
+            message.response = message_response;
 
-            sender.send(unwrapped_message)
-                .expect("Could not send data from AHRS.");
+            sender.send(message)
+                .expect("Ahrs: Could not send data from worker.");
         }
 
         iterations = iterations + 1;
@@ -446,40 +414,12 @@ pub fn compute_quaternions(
     let elapsed = start.elapsed();
 
     write!(log_file, "DEBUG: Elapsed time: {:?}\n", elapsed)
-        .expect("Error writing to log file.");
+        .expect("Ahrs: Error writing to log file.");
     write!(log_file, "DEBUG: Loop iterations: {}\n", iterations)
-        .expect("Error writing to log file.");
+        .expect("Ahrs: Error writing to log file.");
     write!(log_file, "DEBUG: MPU reads: {}\n", mpu_reads)
-        .expect("Error writing to log file.");
-
-    // Print timing information to file
-    write!(log_file, "DATA: mpu_sample_start, 1, {}\n", TOTAL_READS)
-        .expect("Error writing to log file.");
-    for (_i, mpu_sample_start_time) in mpu_sample_start.iter().enumerate() {
-        write!(log_file, "{}\n", mpu_sample_start_time)
-            .expect("Error writing to log file.");
-    }
-    write!(log_file, "DATA: mpu_sample_stop, 1, {}\n", TOTAL_READS)
-        .expect("Error writing to log file.");
-    for (_i, mpu_sample_stop_time) in mpu_sample_stop.iter().enumerate() {
-        write!(log_file, "{}\n", mpu_sample_stop_time)
-            .expect("Error writing to log file.");
-    }
-    write!(log_file, "DATA: mag_sample_start, 1, {}\n", TOTAL_READS)
-        .expect("Error writing to log file.");
-    for (_i, mag_sample_start_time) in mag_sample_start.iter().enumerate() {
-        write!(log_file, "{}\n", mag_sample_start_time)
-            .expect("Error writing to log file.");
-    }
-    write!(log_file, "DATA: mag_sample_stop, 1, {}\n", TOTAL_READS)
-        .expect("Error writing to log file.");
-    for (_i, mag_sample_stop_time) in mag_sample_stop.iter().enumerate() {
-        write!(log_file, "{}\n", mag_sample_stop_time)
-            .expect("Error writing to log file.");
-    }
+        .expect("Ahrs: Error writing to log file.");
 }
-
-
 
 
 // TODO - refactor these functions somehow

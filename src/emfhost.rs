@@ -26,22 +26,18 @@ impl EmfHost {
     /// # More Documentation
     ///
     /// Would go here eventually...
-    pub fn new(time_string: &str, i2c: Arc<Mutex<I2c>>) -> EmfHost {
-        // Connect using I2C bus #0; this will soon be replaced with a mutex reference
-        // let mut i2c = I2c::with_bus(0)
-        //     .expect("Could not create I2C device.");
-        
+    pub fn new(time_string: &str, verbose: bool, i2c: Arc<Mutex<I2c>>) -> EmfHost {
         // Set up connection to log file
         let log_file_name = format!("/home/ghost/rust-stuff/gpu_logs/{}_emf_logfile.txt", time_string); 
         let mut log_file = File::create(log_file_name)
-            .expect("Unable to create EMF logfile.");
+            .expect("Emf: Unable to create logfile.");
 
         {
             // Aquire mutex for access to the I2C hardware
             let mut i2c = i2c.lock().unwrap();
             // Set the address of the ADS1115
             i2c.set_slave_address(crate::ADDR_ADS1115)
-                .expect("Unable to set I2C address.");
+                .expect("Emf: Unable to set I2C address.");
 
             // Configure the ADC mdoule
             configure_ads1115(&i2c, &mut log_file);
@@ -51,7 +47,15 @@ impl EmfHost {
         let (mosi_sender, mosi_receiver) = mpsc::channel();
         let (miso_sender, miso_receiver) = mpsc::channel();
 
-        let emfhost_thread = thread::spawn(move || read_emf_data(i2c, &mut log_file, mosi_receiver, miso_sender));
+        let emfhost_thread = thread::spawn(move ||
+            emf_worker(
+                i2c,
+                &mut log_file,
+                verbose,
+                mosi_receiver,
+                miso_sender
+            )
+        );
 
         EmfHost {
             sender: Some(mosi_sender),
@@ -74,15 +78,15 @@ impl EmfHost {
         // Get return message from EMF thread
         let return_message = self.receiver.as_ref().unwrap()
             .recv().expect("Emf: No response from worker.");
-        // Return encoded voltage data
+        // Return response from EMF thread
         return_message.response
     }
 }
 
-/// Compute quaternions forever
-pub fn read_emf_data(
+pub fn emf_worker(
     i2c: Arc<Mutex<I2c>>,
     log_file: &mut File,
+    verbose: bool,
     receiver: Receiver<crate::Message>,
     sender: Sender<crate::Message>
     ) {
@@ -91,7 +95,7 @@ pub fn read_emf_data(
 
     // Variables for monitoring the acquisition rate
     let mut iterations: u32 = 0;
-    // let mut adc_reads: u32 = 0;
+    let mut adc_reads: u32 = 0;
 
     // TODO - there should be a way out of this loop when a close method is invoked
     loop {
@@ -99,10 +103,23 @@ pub fn read_emf_data(
             let message_response = match message.address {
                 0x00 => { // Read a single value and return
                     let mut i2c = i2c.lock().unwrap();
-                    read_adc_voltage(&mut i2c).to_be_bytes().into_iter().collect()
+                    let voltage = read_adc_voltage(&mut i2c);
+                    adc_reads = adc_reads + 1;
+                    if verbose {
+                        let current_update_time: u64 = start.elapsed().as_nanos() as u64;
+                        write!(log_file, "DATA: current_time, 1, 1\n")
+                            .expect("Emf: Error writing to log file.");
+                        write!(log_file, "{}\n", current_update_time)
+                            .expect("Emf: Error writing to log file.");
+                        write!(log_file, "DATA: voltage, 1, 1\n")
+                            .expect("Emf: Error writing to log file.");
+                        write!(log_file, "{}\n", voltage)
+                            .expect("Emf: Error writing to log file.");
+                    }
+                    voltage.to_be_bytes().into_iter().collect()
                 },
                 0x01 => { // Keep reading values until a stop message is received; return all recorded data
-                    println!("Beginning ADC acquisition");
+                    // println!("Beginning ADC acquisition");
                     let begin_message = crate::Message {
                         address: 0x00,
                         request: Vec::new(),
@@ -118,11 +135,24 @@ pub fn read_emf_data(
                         }
                         {
                             let mut i2c = i2c.lock().unwrap();
-                            output_data.push(read_adc_voltage(&mut i2c));
+                            let voltage = read_adc_voltage(&mut i2c);
+                            adc_reads = adc_reads + 1;
+                            if verbose {
+                                let current_update_time: u64 = start.elapsed().as_nanos() as u64;
+                                write!(log_file, "DATA: current_time, 1, 1\n")
+                                    .expect("Emf: Error writing to log file.");
+                                write!(log_file, "{}\n", current_update_time)
+                                    .expect("Emf: Error writing to log file.");
+                                write!(log_file, "DATA: voltage, 1, 1\n")
+                                    .expect("Emf: Error writing to log file.");
+                                write!(log_file, "{}\n", voltage)
+                                    .expect("Emf: Error writing to log file.");
+                            }
+                            output_data.push(voltage);
                         }
                     }
                     // Return acquired data
-                    println!("Returning measured data");
+                    // println!("Returning measured data");
                     encode_voltage_vector(output_data)
                 }
                 _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
@@ -131,17 +161,8 @@ pub fn read_emf_data(
             message.response = message_response;
 
             sender.send(message)
-                .expect("Could not send data from EMF host.");
+                .expect("Emf: Could not send data from worker.");
         }
-        // adc_reads = adc_reads + 1;
-
-        // let current_update_time: u64 = start.elapsed().as_nanos() as u64;
-        // let delta_t: f64 = (current_update_time - last_update_time) as f64 / 1000000000.0;
-        // last_update_time = current_update_time;
-        // write!(log_file, "DATA: update_period, 1, 1\n")
-        //     .expect("IOError: Error writing to log file.");
-        // write!(log_file, "{}\n", delta_t)
-        //     .expect("IOError: Error writing to log file.");
 
         thread::sleep(Duration::from_millis(50));
 
@@ -154,8 +175,8 @@ pub fn read_emf_data(
         .expect("Error writing to log file.");
     write!(log_file, "DEBUG: Loop iterations: {}\n", iterations)
         .expect("Error writing to log file.");
-    // write!(log_file, "DEBUG: ADC reads: {}\n", adc_reads)
-    //     .expect("Error writing to log file.");
+    write!(log_file, "DEBUG: ADC reads: {}\n", adc_reads)
+        .expect("Error writing to log file.");
 }
 
 /// Funciton which configures the ADS1115

@@ -7,7 +7,7 @@
 use std::{env, thread, time::Duration, sync::{Arc, Mutex}};
 use rppal::{system::DeviceInfo, i2c::I2c};
 use rust_gpu::{
-    ahrs::Ahrs,
+    ahrs::AhrsHost,
     sockethost::SocketHost,
     emfhost::EmfHost,
 };
@@ -42,12 +42,12 @@ fn main() {
     let i2c = Arc::new(Mutex::new(i2c));
 
     // Set up connection to AHRS
-    let gpu_ahrs = Ahrs::new(&time_string, verbose, Arc::clone(&i2c));
+    let gpu_ahrs = AhrsHost::new(&time_string, verbose, Arc::clone(&i2c));
     println!("Waiting on the AHRS to come up...");
     thread::sleep(Duration::from_millis(1000));
 
     // Set up connection to EMF detector
-    let gpu_emf = EmfHost::new(&time_string, Arc::clone(&i2c));
+    let gpu_emf = EmfHost::new(&time_string, verbose, Arc::clone(&i2c));
     println!("Waiting on the EMF host to come up...");
     thread::sleep(Duration::from_millis(1000));
 
