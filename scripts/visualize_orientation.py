@@ -5,11 +5,12 @@ import numpy as np
 import pygame
 import math
 import time
+import os
 from OpenGL.GL import *
 from OpenGL.GLU import *
 from pygame.locals import *
 
-HOST = "ip_address"  # Ghost detector IP address
+HOST = os.environ['GPU_ADDRESS']  # Ghost detector IP address
 PORT = 9005  # SocketHost listening port
 
 video_flags = OPENGL | DOUBLEBUF
