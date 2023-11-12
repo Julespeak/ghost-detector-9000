@@ -83,6 +83,19 @@ impl EmfHost {
     }
 }
 
+impl Drop for EmfHost {
+    fn drop(&mut self) {
+        println!("EmfHost is going down!");
+
+        drop(self.sender.take());
+        drop(self.receiver.take());
+
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
 pub fn emf_worker(
     i2c: Arc<Mutex<I2c>>,
     log_file: &mut File,
@@ -97,71 +110,76 @@ pub fn emf_worker(
     let mut iterations: u32 = 0;
     let mut adc_reads: u32 = 0;
 
-    // TODO - there should be a way out of this loop when a close method is invoked
     loop {
-        if let Ok(mut message) = receiver.try_recv() {
-            let message_response = match message.address {
-                0x00 => { // Read a single value and return
-                    let mut i2c = i2c.lock().unwrap();
-                    let voltage = read_adc_voltage(&mut i2c);
-                    adc_reads = adc_reads + 1;
-                    if verbose {
-                        let current_update_time: u64 = start.elapsed().as_nanos() as u64;
-                        write!(log_file, "DATA: current_time, 1, 1\n")
-                            .expect("Emf: Error writing to log file.");
-                        write!(log_file, "{}\n", current_update_time)
-                            .expect("Emf: Error writing to log file.");
-                        write!(log_file, "DATA: voltage, 1, 1\n")
-                            .expect("Emf: Error writing to log file.");
-                        write!(log_file, "{}\n", voltage)
-                            .expect("Emf: Error writing to log file.");
-                    }
-                    voltage.to_be_bytes().into_iter().collect()
-                },
-                0x01 => { // Keep reading values until a stop message is received; return all recorded data
-                    // println!("Beginning ADC acquisition");
-                    let begin_message = crate::Message {
-                        address: 0x00,
-                        request: Vec::new(),
-                        response: vec![0x00, 0x01],
-                    };
-                    sender.send(begin_message)
-                        .expect("Emf: Could not send data back from worker.");
-                    // Loop while reading data; stop when a stop message is received
-                    let mut output_data: Vec<f64> = Vec::new();
-                    loop {
-                        if let Ok(stop_message) = receiver.try_recv() {
-                            if stop_message.address == 0x02 { break; }
+        match receiver.try_recv() {
+            Ok(mut message) => {
+                let message_response = match message.address {
+                    0x00 => { // Read a single value and return
+                        let mut i2c = i2c.lock().unwrap();
+                        let voltage = read_adc_voltage(&mut i2c);
+                        adc_reads = adc_reads + 1;
+                        if verbose {
+                            let current_update_time: u64 = start.elapsed().as_nanos() as u64;
+                            write!(log_file, "DATA: current_time, 1, 1\n")
+                                .expect("Emf: Error writing to log file.");
+                            write!(log_file, "{}\n", current_update_time)
+                                .expect("Emf: Error writing to log file.");
+                            write!(log_file, "DATA: voltage, 1, 1\n")
+                                .expect("Emf: Error writing to log file.");
+                            write!(log_file, "{}\n", voltage)
+                                .expect("Emf: Error writing to log file.");
                         }
-                        {
-                            let mut i2c = i2c.lock().unwrap();
-                            let voltage = read_adc_voltage(&mut i2c);
-                            adc_reads = adc_reads + 1;
-                            if verbose {
-                                let current_update_time: u64 = start.elapsed().as_nanos() as u64;
-                                write!(log_file, "DATA: current_time, 1, 1\n")
-                                    .expect("Emf: Error writing to log file.");
-                                write!(log_file, "{}\n", current_update_time)
-                                    .expect("Emf: Error writing to log file.");
-                                write!(log_file, "DATA: voltage, 1, 1\n")
-                                    .expect("Emf: Error writing to log file.");
-                                write!(log_file, "{}\n", voltage)
-                                    .expect("Emf: Error writing to log file.");
+                        voltage.to_be_bytes().into_iter().collect()
+                    },
+                    0x01 => { // Keep reading values until a stop message is received; return all recorded data
+                        // println!("Beginning ADC acquisition");
+                        let begin_message = crate::Message {
+                            address: 0x00,
+                            request: Vec::new(),
+                            response: vec![0x00, 0x01],
+                        };
+                        sender.send(begin_message)
+                            .expect("Emf: Could not send data back from worker.");
+                        // Loop while reading data; stop when a stop message is received
+                        let mut output_data: Vec<f64> = Vec::new();
+                        loop {
+                            if let Ok(stop_message) = receiver.try_recv() {
+                                if stop_message.address == 0x02 { break; }
                             }
-                            output_data.push(voltage);
+                            {
+                                let mut i2c = i2c.lock().unwrap();
+                                let voltage = read_adc_voltage(&mut i2c);
+                                adc_reads = adc_reads + 1;
+                                if verbose {
+                                    let current_update_time: u64 = start.elapsed().as_nanos() as u64;
+                                    write!(log_file, "DATA: current_time, 1, 1\n")
+                                        .expect("Emf: Error writing to log file.");
+                                    write!(log_file, "{}\n", current_update_time)
+                                        .expect("Emf: Error writing to log file.");
+                                    write!(log_file, "DATA: voltage, 1, 1\n")
+                                        .expect("Emf: Error writing to log file.");
+                                    write!(log_file, "{}\n", voltage)
+                                        .expect("Emf: Error writing to log file.");
+                                }
+                                output_data.push(voltage);
+                            }
                         }
+                        // Return acquired data
+                        // println!("Returning measured data");
+                        encode_voltage_vector(output_data)
                     }
-                    // Return acquired data
-                    // println!("Returning measured data");
-                    encode_voltage_vector(output_data)
-                }
-                _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
-            };
+                    _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
+                };
 
-            message.response = message_response;
+                message.response = message_response;
 
-            sender.send(message)
-                .expect("Emf: Could not send data from worker.");
+                sender.send(message)
+                    .expect("Emf: Could not send data from worker.");
+            },
+            Err(mpsc::TryRecvError::Empty) => (),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                break
+            },
         }
 
         thread::sleep(Duration::from_millis(50));

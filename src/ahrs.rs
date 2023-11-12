@@ -264,6 +264,20 @@ impl AhrsHost {
     }
 }
 
+impl Drop for AhrsHost {
+    fn drop(&mut self) {
+        println!("AhrsHost is going down!");
+
+        drop(self.sender.take());
+        drop(self.receiver.take());
+
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
+
 pub fn ahrs_worker(
     i2c: Arc<Mutex<I2c>>,
     log_file: &mut File,
@@ -387,27 +401,31 @@ pub fn ahrs_worker(
             write!(log_file, "{} {} {} {}\n", q[0], q[1], q[2], q[3])
                 .expect("Ahrs: Error writing to log file.");
         }
+        match receiver.try_recv() {
+            Ok(mut message) => {
+                let message_response = match message.address {
+                    0x00 => get_encoded_quaternion(q),
+                    0x01 => {
+                        // Aquire mutex for access to the I2C hardware
+                        let mut i2c = i2c.lock().unwrap();
+                        // During field recalibration, perform magnetometer correction (mag_cal = true)
+                        *calibration = initialize_ahrs(&mut i2c, log_file, true);
+                        q = [1.0, 0.0, 0.0, 0.0];
+                        vec![0x0B, 0x00]
+                    }
+                    _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
+                };
 
-        if let Ok(mut message) = receiver.try_recv() {
-            let message_response = match message.address {
-                0x00 => get_encoded_quaternion(q),
-                0x01 => {
-                    // Aquire mutex for access to the I2C hardware
-                    let mut i2c = i2c.lock().unwrap();
-                    // During field recalibration, perform magnetometer correction (mag_cal = true)
-                    *calibration = initialize_ahrs(&mut i2c, log_file, true);
-                    q = [1.0, 0.0, 0.0, 0.0];
-                    vec![0x0B, 0x00]
-                }
-                _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
-            };
+                message.response = message_response;
 
-            message.response = message_response;
-
-            sender.send(message)
-                .expect("Ahrs: Could not send data from worker.");
+                sender.send(message)
+                    .expect("Ahrs: Could not send data from worker.");
+            },
+            Err(mpsc::TryRecvError::Empty) => (),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                break
+            },
         }
-
         iterations = iterations + 1;
     }
 

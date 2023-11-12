@@ -51,6 +51,19 @@ impl SocketHost {
     }
 }
 
+impl Drop for SocketHost {
+    fn drop(&mut self) {
+        println!("SocketHost is going down!");
+
+        drop(self.sender.take());
+        drop(self.receiver.take());
+
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
 /// Wait for a socket connection; when one exists, wait for messages and forward those to the GPU
 pub fn socket_worker(
     log_file: &mut File,
@@ -60,6 +73,7 @@ pub fn socket_worker(
     let start = Instant::now();
 
     let listener = TcpListener::bind("ip_address:9005").unwrap();
+    let mut shutdown: bool = false;
 
     for stream in listener.incoming() {
         let mut stream = stream.unwrap();
@@ -93,11 +107,23 @@ pub fn socket_worker(
                 response: Vec::new(),
             };
 
-            sender.send(message)
-                .expect("Socket: Could not send data back from worker.");
+            match sender.send(message) {
+                Ok(_) => (),
+                Err(_) => {
+                    // Enter shutdown mode if GPU is disconnected
+                    shutdown = true;
+                    break
+                },
+            }
 
-            let return_message = receiver.recv()
-                .expect("Socket: No response from worker");
+            let return_message = match receiver.recv() {
+                Ok(message) => message,
+                Err(_) => {
+                    // Enter shutdown mode if GPU is disconnected
+                    shutdown = true;
+                    break
+                },
+            };
 
             match stream.write_all(&return_message.response) {
                 Ok(nb) => nb,
@@ -107,6 +133,10 @@ pub fn socket_worker(
                     break
                 }
             }
+        }
+
+        if shutdown {
+            break
         }
     }
 

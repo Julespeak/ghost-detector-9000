@@ -43,16 +43,18 @@ fn main() {
 
     // Set up connection to AHRS
     let gpu_ahrs = AhrsHost::new(&time_string, verbose, Arc::clone(&i2c));
-    println!("Waiting on the AHRS to come up...");
+    println!("AhrsHost coming online...");
     thread::sleep(Duration::from_millis(1000));
 
     // Set up connection to EMF detector
     let gpu_emf = EmfHost::new(&time_string, verbose, Arc::clone(&i2c));
-    println!("Waiting on the EMF host to come up...");
+    println!("EmfHost coming online...");
     thread::sleep(Duration::from_millis(1000));
 
     // Set up connection to SocketHost
-    let socket_host = SocketHost::new(&time_string);
+    let gpu_socket = SocketHost::new(&time_string);
+    println!("SocketHost coming online...");
+    thread::sleep(Duration::from_millis(100));
 
     println!("Rust G.P.U. is alive; beginning main loop...");
 
@@ -60,7 +62,7 @@ fn main() {
 
     loop {
         // Check for new Messages from the SocketHost
-        if let Ok(mut message) = socket_host.receiver.as_ref().unwrap().try_recv() {
+        if let Ok(mut message) = gpu_socket.receiver.as_ref().unwrap().try_recv() {
             let message_response = match message.address {
                 0x00 => "RUST_GPU_V0.0".as_bytes().to_vec(),
                 0x01 => gpu_ahrs.send_message(0x00, Vec::new()), // Get the latest quaternion
@@ -68,21 +70,29 @@ fn main() {
                 0x03 => gpu_ahrs.send_message(0x01, Vec::new()), // Do field recalibration
                 0x04 => gpu_emf.send_message(0x01, Vec::new()), // Begin long acquisition of ADC data
                 0x05 => gpu_emf.send_message(0x02, Vec::new()), // End long acquisition of ADC data
+                0x06 => { // G.P.U. shutdown
+                    println!("Rust G.P.U. is going down!");
+                    break
+                },
                 _ => "UNKNOWN ADDRESS".as_bytes().to_vec(),
             };
 
-            // println!("GPU - Got a message with address: {}", unwrapped_message.address);
-            // println!("GPU - Going to respond with: {:?}", message_response);
-
             message.response = message_response;
 
-            socket_host.sender.as_ref().unwrap().send(message)
-                .expect("Could not send data from GPU.");
+            gpu_socket.sender.as_ref().unwrap().send(message)
+                .expect("GPU: Could not send data to SocketHost.");
         }
 
         iterations = iterations + 1;
-        // println!("{} iterations through the main loop", iterations);
 
         thread::sleep(Duration::from_millis(10));
     }
+
+    println!("Did {} iterations through the main loop", iterations);
+
+    drop(gpu_ahrs);
+    drop(gpu_emf);
+    drop(gpu_socket);
+
+    println!("Rust G.P.U. is dead.  R.I.P.");
 }
