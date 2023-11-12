@@ -5,6 +5,7 @@ import socket
 import numpy as np
 import math
 import time
+import wave
 from numpy import linalg as LA
 import pygame
 
@@ -153,7 +154,7 @@ ghost_array = []
 
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 	s.connect((HOST, PORT))
-	s.settimeout(0.1)
+	s.settimeout(5)
 
 	# Get initial quaternion from the G.P.U.
 	s.sendall(b'\x01\x02\xDE\xAD')
@@ -180,7 +181,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 
 		# Get latest quaternion from the G.P.U.
 		s.sendall(b'\x01\x02\xDE\xAD')
-		data = s.recv(64)
+		data = s.recv(32)
 		dt = np.dtype(float)
 		dt = dt.newbyteorder('>')
 		quat = np.frombuffer(data, dtype=dt, count=4)
@@ -255,14 +256,68 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 				pixels.show()
 			else:
 				if not ghost_scan:
-					print("Begin scanning for ghosts")
-					# some kind of audio feedback for starting the scan
-					# Here is where you send the signal to the GPU to start reading ADC data
+					# print("Begin scanning for ghosts")
+					# TODO - Some kind of audio feedback for starting the scan
+					s.sendall(b'\x04\x02\xDE\xAD')
+					response_data = s.recv(2)
+					# print("Ghost scan response = ", response_data)
+
 				ghost_scan = True
 		else:
 			if ghost_scan:
-				print("Stopping scan")
-				# Here is where you send the signal to the GPU to stop reading ADC data
+				# print("Stopping scan")
+				pixels.fill((0, 0, 0))
+				pixels.show()
+				
+				# Send command to end the ADC recording
+				s.settimeout(0.3)
+				s.sendall(b'\x05\x02\xDE\xAD')
+				# Taken from https://stackoverflow.com/questions/17667903/python-socket-receive-large-amount-of-data
+				data = b''
+				audio_output_counter = 0
+				while True:
+					try:
+						part = s.recv(4096)
+						data += part
+						if len(part) < 4096:
+							break
+					except socket.timeout:
+						# print("Data not ready yet...")
+						pass
+					finally:
+						audio_output_counter += 1
+
+					pixels.fill((0, 0, 0))
+					pixels[audio_output_counter%25] = [255, 255, 0]
+					pixels[(25-audio_output_counter)%25] = [255, 255, 0]
+					pixels.show()
+				s.settimeout(5)
+
+				dt = np.dtype(float)
+				dt = dt.newbyteorder('>')
+				voltage_array = np.frombuffer(data, dtype=dt, count=int(len(data)/8))
+				
+				pixels.fill((0, 0, 0))
+				pixels.show()
+				
+				# Generate and playback audio file from the voltage data
+				gain = 5.0
+				samplerate = 1000
+				recorded_data = (voltage_array - np.average(voltage_array)) * gain
+				audio = np.array([recorded_data, recorded_data]).T
+				audio = (audio * (2 ** 15 -1)).astype("<h")
+				with wave.open('/home/ghost/audio/recorded_data.wav', 'w') as f:
+					# 2 Channels
+					f.setnchannels(2)
+					# 2 bytes per sample
+					f.setsampwidth(2)
+					f.setframerate(samplerate)
+					f.writeframes(audio.tobytes())
+
+				audio_duration = len(recorded_data)/samplerate
+				pygame.mixer.Channel(0).play(pygame.mixer.Sound('/home/ghost/audio/recorded_data.wav'), maxtime=int(audio_duration*1000))
+				time.sleep(audio_duration)
+
 				test_value = np.random.uniform(0.0, 100.)
 				if test_value > 67:
 					ghost_array = add_ghost_to_array(ghost_array)
@@ -306,16 +361,18 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 				print("Recalibrating orientation...")
 				if blue_2_counter > 25:
 					print("Doing full reinitialization...")
+					s.settimeout(0.1)
 					s.sendall(b'\x03\x02\xDE\xAD')
 					currently_calibrating = True
 					calibration_counter = 0
 					while currently_calibrating:
 						try:
 							response_data = s.recv(2)
-							print("Reinitialization response = ", response_data)
+							# print("Reinitialization response = ", response_data)
 							currently_calibrating = False
 						except socket.timeout:
-							print("Calibration not done yet")
+							# print("Calibration not done yet")
+							pass
 						finally:
 							calibration_counter += 1
 
@@ -323,6 +380,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 							pixels.fill((0, 0, 0))
 							pixels[calibration_counter%25] = [0, 0, 255]
 							pixels.show()
+					s.settimeout(5)
 
 					# Return to neutral position
 					pixels.fill((0, 0, 255))
@@ -411,7 +469,8 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
 		# Audio feedback events
 		if len(detected_ghosts)>0:
 			if detected_ghosts[0]["located"]:
-				print("GHOST DETECTED!")
+				# print("GHOST DETECTED!")
+				pass
 			else:
 				# print("Ghost in area!")
 				pass
