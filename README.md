@@ -1,5 +1,5 @@
 # Ghost Detector 9000
-The reppository serves as a companion to a hardware build with a Raspberry Pi that I have documented in an [Instructable](https://www.instructables.com/The-Ghost-Detector-9000/).  With the Ghost Detector 9000 hardware, this software can be used to play a ghost-detecting game that allows the user to scan objects for ghosts and then instructs the user to point the detector in the direction of a ghost.  See the Instructable for more details about the project.  There is also a [video](https://www.youtube.com/watch?v=y_uXFXTJDN4).
+This repository serves as a companion to a hardware build with a Raspberry Pi that I have documented in an [Instructable](https://www.instructables.com/The-Ghost-Detector-9000/).  With the Ghost Detector 9000 hardware, this software can be used to play a ghost-detecting game that allows the user to scan objects for ghosts and then instructs the user to point the detector in the direction of a ghost signal.  See the Instructable for more details about the project.  There is also a [video](https://www.youtube.com/watch?v=y_uXFXTJDN4).
 
 The software for the Ghost Detector 9000 is divided into two primary programs:
 - The G.P.U. (Ghost Processing Unit): Runs an AHRS algorithm with a IMU, reads from and controls hardware peripherals, responds to commands over a socket connection.
