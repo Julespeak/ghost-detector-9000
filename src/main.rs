@@ -13,7 +13,7 @@ use rust_gpu::{
 };
 
 fn main() {
-    println!("Welcome to the Rust G.P.U. V0.0!");
+    println!("Welcome to the Rust G.P.U. V0.1!");
     println!("Running on a {}.", DeviceInfo::new().expect("Could not get device info.").model());
 
     let args: Vec<String> = env::args().collect();
@@ -64,7 +64,7 @@ fn main() {
         // Check for new Messages from the SocketHost
         if let Ok(mut message) = gpu_socket.receiver.as_ref().unwrap().try_recv() {
             let message_response = match message.address {
-                0x00 => "RUST_GPU_V0.0".as_bytes().to_vec(),
+                0x00 => "RUST_GPU_V0.1".as_bytes().to_vec(),
                 0x01 => gpu_ahrs.send_message(0x00, Vec::new()), // Get the latest quaternion
                 0x02 => gpu_emf.send_message(0x00, Vec::new()), // Acquire single-shot of ADC data
                 0x03 => gpu_ahrs.send_message(0x01, Vec::new()), // Do field recalibration
